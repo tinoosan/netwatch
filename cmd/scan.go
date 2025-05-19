@@ -22,7 +22,11 @@ Output can be displayed as formatted text or JSON.
 Example:
   netwatch scan --subnet 192.168.1.0/24 --output json`,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("scan called")
+
+		subnet, _ := cmd.Flags().GetString("subnet")
+		output, _ := cmd.Flags().GetString("output")
+
+		fmt.Printf("flags set: subnet %s | output %s\n", subnet, output)
 	},
 }
 
@@ -38,4 +42,6 @@ func init() {
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
 	// scanCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	scanCmd.Flags().StringP("subnet", "s", "192.168.1.0/24", "CIDR block of the subnet to scan")
+	scanCmd.Flags().StringP("output", "o", "text", "Output format: text or json")
 }
