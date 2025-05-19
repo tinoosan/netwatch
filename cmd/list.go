@@ -20,7 +20,8 @@ MAC (if available), and last seen time. Useful for getting a snapshot of your cu
 Example:
   netwatch devices list --format json`,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("list called")
+		output, _ := cmd.Flags().GetString("output")
+		fmt.Printf("flags set: output %s\n", output)
 	},
 }
 
@@ -36,4 +37,5 @@ func init() {
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
 	// listCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	listCmd.Flags().StringP("output", "o", "json", "Output format: text or json")
 }
