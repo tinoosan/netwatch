@@ -1,6 +1,5 @@
 /*
 Copyright © 2025 NAME HERE <EMAIL ADDRESS>
-
 */
 package cmd
 
@@ -8,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"github.com/tinoosan/netwatch/internal/scan"
 )
 
 // scanCmd represents the scan command
@@ -27,6 +27,11 @@ Example:
 		output, _ := cmd.Flags().GetString("output")
 
 		fmt.Printf("flags set: subnet %s | output %s\n", subnet, output)
+
+		err := scan.PingHostV4("192.168.0.133", 5)
+		if err != nil {
+			fmt.Println(err)
+		}
 	},
 }
 

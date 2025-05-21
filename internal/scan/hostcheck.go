@@ -76,11 +76,17 @@ func PingHostV4(addr string, attempts int) error {
 			return fmt.Errorf("failed to read ICMP response message: %w", err)
 		}
 
-		duration := start.Sub(start)
+		duration := time.Since(start)
 
 		parsedMessage, err := icmp.ParseMessage(IPv4Protocol, breply[:n])
 		if err != nil {
 			return fmt.Errorf("failed to parse ICMP message: %w", err)
+		}
+
+		
+		// Cannot assume that message recieved will be of type Echo Reply
+		if parsedMessage.Type != ipv4.ICMPTypeEchoReply {
+			return fmt.Errorf("unexpected ICMP response: got type %v, expected echo reply", parsedMessage.Type)
 		}
 
 		echoType := parsedMessage.Type
@@ -89,7 +95,7 @@ func PingHostV4(addr string, attempts int) error {
 
 		switch parsedMessage.Type {
 		case ipv4.ICMPTypeEchoReply:
-			fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time:%dms\n", body.Len(proto), peer, body.ID, echoType, body.Seq, body.Data, duration)
+			fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time:%v\n", body.Len(proto), peer, body.ID, echoType, body.Seq, body.Data, duration)
 		default:
 			fmt.Printf("got %+v, from %v; want echo reply", parsedMessage, peer)
 		}
