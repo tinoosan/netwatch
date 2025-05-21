@@ -15,8 +15,19 @@ const (
 	IPv4Protocol  = 1
 )
 
-
-func PingHost(addr string, attempts int) error {
+// PingHostV4 sends one or more ICMP Echo requests to a single IPv4 address.
+// It prints the response details for each attempt to stdout.
+//
+// An error is returned if the packet cannot be sent, no valid reply is received,
+// or the response cannot be parsed.
+//
+// The function increments the ICMP sequence number with each attempt.
+// This implementation is IPv4-only and is intended for use with a single host.
+//
+// Note: This function does not return structured result data. It is designed
+// for use within higher-level scanning routines, which may handle concurrency,
+// output formatting, and result storage externally.
+func PingHostV4(addr string, attempts int) error {
 
 	dst, err := net.ResolveIPAddr("ip4", addr)
 	if err != nil {
