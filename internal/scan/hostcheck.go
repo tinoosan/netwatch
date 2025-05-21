@@ -1,14 +1,13 @@
 package scan
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"time"
 
+	"github.com/tinoosan/netwatch/internal/logger"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 )
@@ -19,8 +18,7 @@ const (
 )
 
 var (
-	buf              bytes.Buffer
-	logger           = log.New(&buf, "ping: ", log.Flags())
+	pingLogger       = logger.New("scan", "ping")
 	ErrResolveIPAddr = errors.New("failed to resolve to target address %v: %w")
 	ErrSocketConn    = errors.New("failed to create raw socket to listen for ICMP packets: %w")
 	ErrMarshalMsg    = errors.New("failed to marshal icmp message: %w")
@@ -45,15 +43,10 @@ var (
 // output formatting, and result storage externally.
 func PingHostV4(addr string, attempts int) error {
 
-	f, err := os.OpenFile("scan.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("log file could not be created: %w", err)
-	}
-
 	dst, err := net.ResolveIPAddr("ip4", addr)
 	if err != nil {
 		errMsg := fmt.Sprintf(ErrResolveIPAddr.Error(), addr, err)
-		writeToLog(f, errMsg)
+		pingLogger.Log(errMsg)
 		return fmt.Errorf(ErrResolveIPAddr.Error(), addr, err)
 	}
 
@@ -61,12 +54,15 @@ func PingHostV4(addr string, attempts int) error {
 	conn, err := icmp.ListenPacket("ip4:icmp", ListenAddress)
 	if err != nil {
 		errMsg := fmt.Sprintf(ErrSocketConn.Error(), err)
-		writeToLog(f, errMsg)
+		pingLogger.Log(errMsg)
 		return fmt.Errorf(ErrSocketConn.Error(), err)
 	}
 
-	writeToLog(f, fmt.Sprintf("connection established with host %v", dst))
-	fmt.Printf("connection established with host %v\n", dst)
+	connMsg := fmt.Sprintf("connection established with host %v", dst)
+	if err = pingLogger.Log(connMsg); err != nil {
+		fmt.Println(err)
+	}
+	fmt.Println(connMsg)
 
 	defer conn.Close()
 
@@ -84,7 +80,7 @@ func PingHostV4(addr string, attempts int) error {
 		bmessage, err := message.Marshal(nil)
 		if err != nil {
 			errMsg := fmt.Sprintf(ErrMarshalMsg.Error(), err)
-			writeToLog(f, errMsg)
+			pingLogger.Log(errMsg)
 			return fmt.Errorf(ErrMarshalMsg.Error(), err)
 		}
 
@@ -93,14 +89,14 @@ func PingHostV4(addr string, attempts int) error {
 		_, err = conn.WriteTo(bmessage, dst)
 		if err != nil {
 			errMsg := fmt.Sprintf(ErrWrite.Error(), err)
-			writeToLog(f, errMsg)
+			pingLogger.Log(errMsg)
 			return fmt.Errorf(ErrWrite.Error(), err)
 		}
 
 		err = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 		if err != nil {
 			errMsg := fmt.Sprintf(ErrDeadline.Error(), err)
-			writeToLog(f, errMsg)
+			pingLogger.Log(errMsg)
 			return fmt.Errorf(ErrDeadline.Error(), err)
 		}
 
@@ -108,7 +104,7 @@ func PingHostV4(addr string, attempts int) error {
 		n, peer, err := conn.ReadFrom(breply)
 		if err != nil {
 			errMsg := fmt.Sprintf(ErrRead.Error(), err)
-			writeToLog(f, errMsg)
+			pingLogger.Log(errMsg)
 			return fmt.Errorf(ErrRead.Error(), err)
 		}
 
@@ -118,14 +114,14 @@ func PingHostV4(addr string, attempts int) error {
 
 		if err != nil {
 			errMsg := fmt.Sprintf(ErrParse.Error(), err)
-			writeToLog(f, errMsg)
+			pingLogger.Log(errMsg)
 			return fmt.Errorf(ErrParse.Error(), err)
 		}
 
 		// Cannot assume that message recieved will be of type Echo Reply
 		if parsedMessage.Type != ipv4.ICMPTypeEchoReply {
 			echoReplyErrLog := fmt.Sprintf(ErrEchoReply.Error(), parsedMessage.Type)
-			writeToLog(f, echoReplyErrLog)
+			pingLogger.Log(echoReplyErrLog)
 			return fmt.Errorf(ErrEchoReply.Error(), parsedMessage.Type)
 		}
 
@@ -136,23 +132,12 @@ func PingHostV4(addr string, attempts int) error {
 		switch parsedMessage.Type {
 		case ipv4.ICMPTypeEchoReply:
 			echoReplyLog := fmt.Sprintf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time:%v", body.Len(proto), peer, body.ID, echoType, body.Seq, body.Data, duration)
-		  writeToLog(f, echoReplyLog)
+			pingLogger.Log(echoReplyLog)
 			fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time:%v\n", body.Len(proto), peer, body.ID, echoType, body.Seq, body.Data, duration)
 		}
 		time.Sleep(1 * time.Second)
 	}
-	f.Close()
+	pingLogger.File.Close()
 	return nil
 
-}
-
-func writeToLog(f *os.File, message string) error {
-	logger.Print(message)
-	_, err := f.Write(buf.Bytes())
-	if err != nil {
-		return fmt.Errorf("could not print to log file")
-	}
-
-	buf.Reset()
-	return nil
 }
