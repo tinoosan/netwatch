@@ -28,7 +28,7 @@ Example:
 
 		fmt.Printf("flags set: subnet %s | output %s\n", subnet, output)
 
-		err := scan.PingHostV4("192.168.0.133", 5)
+		err := scan.PingHostV4("192.168.0.243", 5)
 		if err != nil {
 			fmt.Println(err)
 		}
