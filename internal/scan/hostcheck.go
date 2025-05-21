@@ -65,6 +65,11 @@ func PingHostV4(addr string, attempts int) error {
 			return fmt.Errorf("failed to send ICMP message: %w", err)
 		}
 
+		err = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+		if err != nil {
+			return fmt.Errorf("failed to set read deadline: %w", err)
+		}
+
 		breply := make([]byte, 512)
 		n, peer, err := conn.ReadFrom(breply)
 		if err != nil {
