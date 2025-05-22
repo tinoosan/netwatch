@@ -31,6 +31,8 @@ var (
 	ErrMaskDecode    = errors.New("failed to decode mask %v: %w")
 )
 
+// toUint32 converts a 4-byte IP address or subnet mask into a 32-bit unsigned integer.
+// Assumes the input slice is in big-endian order and has a length of 4
 func toUint32(b []byte) uint32 {
 
 	result := (uint32(b[0]) << 24) |
@@ -41,6 +43,8 @@ func toUint32(b []byte) uint32 {
 	return result
 }
 
+// toByte converts a 32-bit unsigned integer into a 4-byte representation of an IP address.
+// The result is returned in big-endian order.
 func toByte(ipUint32 uint32) []byte {
 	b := make([]byte, 4)
 	b[0] = (byte(ipUint32>>24) & 0xFF)
@@ -50,6 +54,11 @@ func toByte(ipUint32 uint32) []byte {
 	return b
 }
 
+// GenerateHosts takes a CIDR subnet string (e.g. "192.168.0.0/24")
+// and returns a slice of all usable host IPs within that subnet.
+//
+// The function excludes the network address (first IP) and broadcast address (last IP).
+// It supports IPv4 only and returns an error for invalid CIDR input.
 func GenerateHosts(subnet string) ([]net.IP, error) {
   ipList := make([]net.IP, 0)
 	_, network, err := net.ParseCIDR(subnet)
