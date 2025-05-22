@@ -27,7 +27,50 @@ var (
 	ErrDeadline      = errors.New("failed to set read deadline: %w")
 	ErrParse         = errors.New("failed to parse ICMP message: %w")
 	ErrEchoReply     = errors.New("unexpected ICMP response: got type %v, expected echo reply")
+	ErrParseSubnet   = errors.New("failed to parse subnet %v: %w")
+	ErrMaskDecode    = errors.New("failed to decode mask %v: %w")
 )
+
+func toUint32(b []byte) uint32 {
+
+	result := (uint32(b[0]) << 24) |
+		(uint32(b[1]) << 16) |
+		(uint32(b[2]) << 8) |
+		(uint32(b[3]))
+
+	return result
+}
+
+func toByte(ipUint32 uint32) []byte {
+	b := make([]byte, 4)
+	b[0] = (byte(ipUint32>>24) & 0xFF)
+	b[1] = (byte(ipUint32>>16) & 0xFF)
+	b[2] = (byte(ipUint32>>8) & 0xFF)
+	b[3] = (byte(ipUint32) & 0xFF)
+	return b
+}
+
+func GenerateHosts(subnet string) ([]net.IP, error) {
+  ipList := make([]net.IP, 0)
+	_, network, err := net.ParseCIDR(subnet)
+	if err != nil {
+		return nil, fmt.Errorf(ErrParseSubnet.Error(), subnet, err)
+	}
+
+	// Convert to 32-bit representation using bitshift (BE)
+	maskUint32 := toUint32(network.Mask)
+	networkIPUint32 := toUint32(network.IP)
+
+	hosts := (^maskUint32 & 0xFFFFFFFF)
+
+	for i := 1; i < int(hosts) ; i++ {
+		ip := toByte(networkIPUint32 + uint32(i))
+		ipList = append(ipList, net.IP(ip))
+	}
+
+	return ipList , nil
+}
+
 
 // PingHostV4 sends one or more ICMP Echo requests to a single IPv4 address.
 // It prints the response details for each attempt to stdout.
@@ -36,7 +79,7 @@ var (
 // or the response cannot be parsed.
 //
 // The function increments the ICMP sequence number with each attempt.
-// This implementation is IPv4-only and is intended for use with a single host.
+// This implementation is IPv4-only and is intended for use with a single ho1t.
 //
 // Note: This function does not return structured result data. It is designed
 // for use within higher-level scanning routines, which may handle concurrency,
