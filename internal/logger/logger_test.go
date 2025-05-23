@@ -9,17 +9,20 @@ import (
 
 func TestLog(t *testing.T) {
 	t.Run("test", func(t *testing.T) {
+    
+		fileName := "logging_test.log"
+		fileDir := "./"+fileName
 
-		file := "./logging_test.log"
-
-		logger := logger.New("logging_test", "test")
-		err := logger.Log("This is a test message")
+		logger := logger.New("test")
+		err := logger.Log(fileName, "This is a test message")
 		if err != nil {
 			t.Errorf("expected nil got %v", err)
 		}
-		dat, err := os.ReadFile(file)
+		dat, err := os.ReadFile(fileDir)
+		if err != nil {
+			t.Errorf("error reading file: %v", err)
+		}
 
-		defer logger.File.Close()
 		if len(dat) == 0 {
 			t.Error("no contents in file")
 		}
@@ -32,7 +35,7 @@ func TestLog(t *testing.T) {
 			t.Errorf("want nil got %s", err)
 		}
 
-		err = os.Remove(file)
+		err = os.Remove(fileDir)
 		if err != nil {
 			t.Error("could not remove file")
 		}

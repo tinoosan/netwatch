@@ -18,7 +18,8 @@ const (
 )
 
 var (
-	pingLogger       = logger.New("scan", "ping")
+	pingLogger       = logger.New("ping")
+	filename         = "scan.log"
 	ErrResolveIPAddr = errors.New("failed to resolve to target address %v: %w")
 	ErrSocketConn    = errors.New("failed to create raw socket to listen for ICMP packets: %w")
 	ErrMarshalMsg    = errors.New("failed to marshal icmp message: %w")
@@ -60,7 +61,7 @@ func toByte(ipUint32 uint32) []byte {
 // The function excludes the network address (first IP) and broadcast address (last IP).
 // It supports IPv4 only and returns an error for invalid CIDR input.
 func GenerateHosts(subnet string) ([]net.IP, error) {
-  ipList := make([]net.IP, 0)
+	ipList := make([]net.IP, 0)
 	_, network, err := net.ParseCIDR(subnet)
 	if err != nil {
 		return nil, fmt.Errorf(ErrParseSubnet.Error(), subnet, err)
@@ -72,14 +73,29 @@ func GenerateHosts(subnet string) ([]net.IP, error) {
 
 	hosts := (^maskUint32 & 0xFFFFFFFF)
 
-	for i := 1; i < int(hosts) ; i++ {
+	for i := 1; i < int(hosts); i++ {
 		ip := toByte(networkIPUint32 + uint32(i))
 		ipList = append(ipList, net.IP(ip))
 	}
 
-	return ipList , nil
+	return ipList, nil
 }
 
+func PingHosts(hosts []net.IP) []net.IP {
+	liveIPs := make([]net.IP, 0)
+
+	for _, host := range hosts {
+		icmpType, err := PingHostV4(host.String(), 1)
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		if icmpType == ipv4.ICMPTypeEchoReply {
+			liveIPs = append(liveIPs, host)
+		}
+	}
+	return liveIPs
+}
 
 // PingHostV4 sends one or more ICMP Echo requests to a single IPv4 address.
 // It prints the response details for each attempt to stdout.
@@ -93,28 +109,22 @@ func GenerateHosts(subnet string) ([]net.IP, error) {
 // Note: This function does not return structured result data. It is designed
 // for use within higher-level scanning routines, which may handle concurrency,
 // output formatting, and result storage externally.
-func PingHostV4(addr string, attempts int) error {
+func PingHostV4(addr string, attempts int) (icmp.Type, error) {
 
 	dst, err := net.ResolveIPAddr("ip4", addr)
 	if err != nil {
 		errMsg := fmt.Sprintf(ErrResolveIPAddr.Error(), addr, err)
-		pingLogger.Log(errMsg)
-		return fmt.Errorf(ErrResolveIPAddr.Error(), addr, err)
+		pingLogger.Log(filename, errMsg)
+		return nil, fmt.Errorf(ErrResolveIPAddr.Error(), addr, err)
 	}
 
 	// Open a raw socket
 	conn, err := icmp.ListenPacket("ip4:icmp", ListenAddress)
 	if err != nil {
 		errMsg := fmt.Sprintf(ErrSocketConn.Error(), err)
-		pingLogger.Log(errMsg)
-		return fmt.Errorf(ErrSocketConn.Error(), err)
+		pingLogger.Log(filename, errMsg)
+		return nil, fmt.Errorf(ErrSocketConn.Error(), err)
 	}
-
-	connMsg := fmt.Sprintf("connection established with host %v", dst)
-	if err = pingLogger.Log(connMsg); err != nil {
-		fmt.Println(err)
-	}
-	fmt.Println(connMsg)
 
 	defer conn.Close()
 
@@ -132,8 +142,8 @@ func PingHostV4(addr string, attempts int) error {
 		bmessage, err := message.Marshal(nil)
 		if err != nil {
 			errMsg := fmt.Sprintf(ErrMarshalMsg.Error(), err)
-			pingLogger.Log(errMsg)
-			return fmt.Errorf(ErrMarshalMsg.Error(), err)
+			pingLogger.Log(filename, errMsg)
+			return nil, fmt.Errorf(ErrMarshalMsg.Error(), err)
 		}
 
 		start := time.Now()
@@ -141,23 +151,23 @@ func PingHostV4(addr string, attempts int) error {
 		_, err = conn.WriteTo(bmessage, dst)
 		if err != nil {
 			errMsg := fmt.Sprintf(ErrWrite.Error(), err)
-			pingLogger.Log(errMsg)
-			return fmt.Errorf(ErrWrite.Error(), err)
+			pingLogger.Log(filename, errMsg)
+			return nil, fmt.Errorf(ErrWrite.Error(), err)
 		}
 
 		err = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 		if err != nil {
 			errMsg := fmt.Sprintf(ErrDeadline.Error(), err)
-			pingLogger.Log(errMsg)
-			return fmt.Errorf(ErrDeadline.Error(), err)
+			pingLogger.Log(filename, errMsg)
+			return nil, fmt.Errorf(ErrDeadline.Error(), err)
 		}
 
 		breply := make([]byte, 512)
 		n, peer, err := conn.ReadFrom(breply)
 		if err != nil {
 			errMsg := fmt.Sprintf(ErrRead.Error(), err)
-			pingLogger.Log(errMsg)
-			return fmt.Errorf(ErrRead.Error(), err)
+			pingLogger.Log(filename, errMsg)
+			return nil, fmt.Errorf(ErrRead.Error(), err)
 		}
 
 		duration := time.Since(start)
@@ -166,30 +176,28 @@ func PingHostV4(addr string, attempts int) error {
 
 		if err != nil {
 			errMsg := fmt.Sprintf(ErrParse.Error(), err)
-			pingLogger.Log(errMsg)
-			return fmt.Errorf(ErrParse.Error(), err)
+			pingLogger.Log(filename, errMsg)
+			return nil, fmt.Errorf(ErrParse.Error(), err)
 		}
-
-		// Cannot assume that message recieved will be of type Echo Reply
-		if parsedMessage.Type != ipv4.ICMPTypeEchoReply {
-			echoReplyErrLog := fmt.Sprintf(ErrEchoReply.Error(), parsedMessage.Type)
-			pingLogger.Log(echoReplyErrLog)
-			return fmt.Errorf(ErrEchoReply.Error(), parsedMessage.Type)
-		}
-
-		echoType := parsedMessage.Type
-		body := parsedMessage.Body.(*icmp.Echo)
-		proto := parsedMessage.Type.Protocol()
 
 		switch parsedMessage.Type {
 		case ipv4.ICMPTypeEchoReply:
-			echoReplyLog := fmt.Sprintf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time:%v", body.Len(proto), peer, body.ID, echoType, body.Seq, body.Data, duration)
-			pingLogger.Log(echoReplyLog)
-			fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time:%v\n", body.Len(proto), peer, body.ID, echoType, body.Seq, body.Data, duration)
+			body := parsedMessage.Body.(*icmp.Echo)
+			proto := parsedMessage.Type.Protocol()
+			echoReplyLog := fmt.Sprintf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time:%v", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
+			err = pingLogger.Log(filename, echoReplyLog)
+			if err != nil {
+				return nil, err
+			}
+			fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time:%v\n", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
+			return parsedMessage.Type, nil
+		case ipv4.ICMPTypeDestinationUnreachable:
+			return parsedMessage.Type, nil
+
 		}
 		time.Sleep(1 * time.Second)
 	}
-	pingLogger.File.Close()
-	return nil
+
+	return nil, nil
 
 }
