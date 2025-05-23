@@ -18,8 +18,6 @@ const (
 )
 
 var (
-	pingLogger       = logger.New("ping")
-	filename         = "scan.log"
 	ErrResolveIPAddr = errors.New("failed to resolve to target address %v: %w")
 	ErrSocketConn    = errors.New("failed to create raw socket to listen for ICMP packets: %w")
 	ErrMarshalMsg    = errors.New("failed to marshal icmp message: %w")
@@ -77,72 +75,52 @@ func GenerateHosts(subnet string) ([]net.IP, error) {
 		ip := toByte(networkIPUint32 + uint32(i))
 		ipList = append(ipList, net.IP(ip))
 	}
-
+	fmt.Println(ipList)
 	return ipList, nil
 }
 
-func PingHosts(hosts []net.IP) []net.IP {
-	liveIPs := make([]net.IP, 0)
 
-	for _, host := range hosts {
-		icmpType, err := PingHostV4(host.String(), 1)
-		if err != nil {
-			fmt.Println(err)
-		}
 
-		if icmpType == ipv4.ICMPTypeEchoReply {
-			liveIPs = append(liveIPs, host)
-		}
-	}
-	return liveIPs
-}
-
-// PingHostV4 sends one or more ICMP Echo requests to a single IPv4 address.
+// PingHosts sends a single ICMP Echo requests to a multiple IPv4 address.
 // It prints the response details for each attempt to stdout.
 //
 // An error is returned if the packet cannot be sent, no valid reply is received,
 // or the response cannot be parsed.
 //
-// The function increments the ICMP sequence number with each attempt.
 // This implementation is IPv4-only and is intended for use with a single ho1t.
-//
-// Note: This function does not return structured result data. It is designed
-// for use within higher-level scanning routines, which may handle concurrency,
-// output formatting, and result storage externally.
-func PingHostV4(addr string, attempts int) (icmp.Type, error) {
-
-	dst, err := net.ResolveIPAddr("ip4", addr)
-	if err != nil {
-		errMsg := fmt.Sprintf(ErrResolveIPAddr.Error(), addr, err)
-		pingLogger.Log(filename, errMsg)
-		return nil, fmt.Errorf(ErrResolveIPAddr.Error(), addr, err)
-	}
+func PingHosts(hosts []net.IP, pingLogger *logger.Logger) ([]net.IP, error) {
+	liveIPs := make([]net.IP, 0)
 
 	// Open a raw socket
 	conn, err := icmp.ListenPacket("ip4:icmp", ListenAddress)
 	if err != nil {
 		errMsg := fmt.Sprintf(ErrSocketConn.Error(), err)
-		pingLogger.Log(filename, errMsg)
+		pingLogger.Log(errMsg)
 		return nil, fmt.Errorf(ErrSocketConn.Error(), err)
 	}
 
 	defer conn.Close()
 
-	for i := range attempts {
+	for _, host := range hosts {
 
 		message := icmp.Message{
 			Type: ipv4.ICMPTypeEcho,
 			Body: &icmp.Echo{
 				ID:   os.Getpid() & 0xffff,
-				Seq:  i,
+				Seq:  0,
 				Data: []byte(""),
 			},
 		}
 
+		dst, err := net.ResolveIPAddr("ip4", host.String())
+		if err != nil {
+			errMsg := fmt.Sprintf(ErrResolveIPAddr.Error(), host.String(), err)
+			pingLogger.Log(errMsg)
+			return nil, fmt.Errorf(ErrResolveIPAddr.Error(), host.String(), err)
+		}
+
 		bmessage, err := message.Marshal(nil)
 		if err != nil {
-			errMsg := fmt.Sprintf(ErrMarshalMsg.Error(), err)
-			pingLogger.Log(filename, errMsg)
 			return nil, fmt.Errorf(ErrMarshalMsg.Error(), err)
 		}
 
@@ -150,23 +128,17 @@ func PingHostV4(addr string, attempts int) (icmp.Type, error) {
 
 		_, err = conn.WriteTo(bmessage, dst)
 		if err != nil {
-			errMsg := fmt.Sprintf(ErrWrite.Error(), err)
-			pingLogger.Log(filename, errMsg)
 			return nil, fmt.Errorf(ErrWrite.Error(), err)
 		}
 
 		err = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 		if err != nil {
-			errMsg := fmt.Sprintf(ErrDeadline.Error(), err)
-			pingLogger.Log(filename, errMsg)
 			return nil, fmt.Errorf(ErrDeadline.Error(), err)
 		}
 
 		breply := make([]byte, 512)
 		n, peer, err := conn.ReadFrom(breply)
 		if err != nil {
-			errMsg := fmt.Sprintf(ErrRead.Error(), err)
-			pingLogger.Log(filename, errMsg)
 			return nil, fmt.Errorf(ErrRead.Error(), err)
 		}
 
@@ -175,29 +147,23 @@ func PingHostV4(addr string, attempts int) (icmp.Type, error) {
 		parsedMessage, err := icmp.ParseMessage(IPv4Protocol, breply[:n])
 
 		if err != nil {
-			errMsg := fmt.Sprintf(ErrParse.Error(), err)
-			pingLogger.Log(filename, errMsg)
 			return nil, fmt.Errorf(ErrParse.Error(), err)
 		}
 
-		switch parsedMessage.Type {
-		case ipv4.ICMPTypeEchoReply:
+		if parsedMessage.Type == ipv4.ICMPTypeEchoReply {
+
 			body := parsedMessage.Body.(*icmp.Echo)
 			proto := parsedMessage.Type.Protocol()
 			echoReplyLog := fmt.Sprintf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time:%v", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
-			err = pingLogger.Log(filename, echoReplyLog)
-			if err != nil {
-				return nil, err
-			}
-			fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time:%v\n", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
-			return parsedMessage.Type, nil
-		case ipv4.ICMPTypeDestinationUnreachable:
-			return parsedMessage.Type, nil
+			pingLogger.Log(echoReplyLog)
 
+			fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time:%v\n", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
+
+			liveIPs = append(liveIPs, host)
 		}
-		time.Sleep(1 * time.Second)
+
 	}
 
-	return nil, nil
-
+	return liveIPs, nil
 }
+

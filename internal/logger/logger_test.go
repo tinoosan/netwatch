@@ -13,7 +13,7 @@ func TestLog(t *testing.T) {
 		fileName := "logging_test.log"
 		fileDir := "./"+fileName
 
-		logger := logger.New("test")
+		logger := logger.New(fileName, "test")
 		err := logger.Log(fileName, "This is a test message")
 		if err != nil {
 			t.Errorf("expected nil got %v", err)
@@ -25,10 +25,6 @@ func TestLog(t *testing.T) {
 
 		if len(dat) == 0 {
 			t.Error("no contents in file")
-		}
-
-		if len(logger.Buffer.Bytes()) != 0 {
-			t.Errorf("buffer not cleared. expected 0 got %d", len(logger.Buffer.Bytes()))
 		}
 
 		if err != nil {

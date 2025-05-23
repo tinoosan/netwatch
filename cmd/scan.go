@@ -7,9 +7,11 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"github.com/tinoosan/netwatch/internal/logger"
 	"github.com/tinoosan/netwatch/internal/scan"
 )
 
+var pingLogger = logger.New("scan.log", "ping")
 // scanCmd represents the scan command
 var scanCmd = &cobra.Command{
 	Use:   "scan",
@@ -28,10 +30,19 @@ Example:
 
 		fmt.Printf("flags set: subnet %s | output %s\n", subnet, output)
 
-		err := scan.PingHostV4("192.168.0.243", 5)
+		hosts, err := scan.GenerateHosts(subnet)
 		if err != nil {
 			fmt.Println(err)
 		}
+
+		liveIps, err := scan.PingHosts(hosts, pingLogger)
+    if err != nil {
+			fmt.Println(err)
+		}
+		fmt.Println(liveIps)
+
+		pingLogger.Close()
+
 	},
 }
 
