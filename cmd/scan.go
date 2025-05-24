@@ -12,6 +12,7 @@ import (
 )
 
 var pingLogger = logger.New("scan.log", "ping")
+
 // scanCmd represents the scan command
 var scanCmd = &cobra.Command{
 	Use:   "scan",
@@ -30,6 +31,7 @@ Example:
 
 		fmt.Printf("flags set: subnet %s | output %s\n", subnet, output)
 
+
 		hosts, err := scan.GenerateHosts(subnet)
 		if err != nil {
 			fmt.Println(err)
@@ -37,11 +39,14 @@ Example:
 
 		wp := scan.NewWorkerPool(20, len(hosts), pingLogger)
 
-		for _, host := range hosts{
+
+		for _, host := range hosts {
 			wp.AddJob(host)
 		}
 
+
 		wp.Start()
+		go wp.WaitForReplies()
 		wp.Wait()
 
 		pingLogger.Close()
