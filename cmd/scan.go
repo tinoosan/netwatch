@@ -35,11 +35,14 @@ Example:
 			fmt.Println(err)
 		}
 
-		liveIps, err := scan.PingHosts(hosts, pingLogger)
-    if err != nil {
-			fmt.Println(err)
+		wp := scan.NewWorkerPool(20, len(hosts), pingLogger)
+
+		for _, host := range hosts{
+			wp.AddJob(host)
 		}
-		fmt.Println(liveIps)
+
+		wp.Start()
+		wp.Wait()
 
 		pingLogger.Close()
 
