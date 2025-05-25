@@ -1,4 +1,3 @@
-That's fine. We can note that the flags are a work in progress and subject to change. It's perfectly normal for a project in development.
 
 ---
 
