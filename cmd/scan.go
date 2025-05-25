@@ -27,9 +27,9 @@ Example:
 	Run: func(cmd *cobra.Command, args []string) {
 
 		subnet, _ := cmd.Flags().GetString("subnet")
-		output, _ := cmd.Flags().GetString("output")
+		//output, _ := cmd.Flags().GetString("output")
 
-		fmt.Printf("flags set: subnet %s | output %s\n", subnet, output)
+		//fmt.Printf("flags set: subnet %s | output %s\n", subnet, output)
 
 
 		hosts, err := scan.GenerateHosts(subnet)
@@ -37,7 +37,7 @@ Example:
 			fmt.Println(err)
 		}
 
-		wp := scan.NewWorkerPool(20, len(hosts), pingLogger)
+		wp := scan.NewWorkerPool(len(hosts), len(hosts), pingLogger)
 
 
 		for _, host := range hosts {
@@ -46,10 +46,16 @@ Example:
 
 
 		wp.Start()
-		go wp.WaitForReplies()
+		//go wp.Process()
 		wp.Wait()
 
 		pingLogger.Close()
+		liveIps := make([]string, 0) 
+		for ip := range wp.Results {
+    	liveIps = append(liveIps, ip)
+		}
+
+		fmt.Printf("%s\n", liveIps)
 
 	},
 }
