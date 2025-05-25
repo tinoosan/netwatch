@@ -15,17 +15,17 @@ import (
 )
 
 type Result struct {
-	IP     net.IP
+	IP     string
 	BodyID int
 }
 
 type WorkerPool struct {
 	workers        int
 	jobQueue       chan net.IP
-	results        chan net.IP
+	Results        chan string
 	wg             *sync.WaitGroup
 	logger         *logger.Logger
-	Conn           *icmp.PacketConn
+	conn           *icmp.PacketConn
 	pendingReplies map[int]chan *Result
 	mu             *sync.Mutex
 }
@@ -57,10 +57,10 @@ func NewWorkerPool(numOfWorkers int, jobQueue int, pingLogger *logger.Logger) *W
 	return &WorkerPool{
 		workers:        numOfWorkers,
 		jobQueue:       make(chan net.IP, jobQueue),
-		results:        make(chan net.IP, jobQueue),
+		Results:        make(chan string, jobQueue),
 		wg:             wg,
 		logger:         pingLogger,
-		Conn:           conn,
+		conn:           conn,
 		pendingReplies: make(map[int]chan *Result),
 		mu:             &sync.Mutex{},
 	}
@@ -96,7 +96,7 @@ func (wp *WorkerPool) worker(id int, conn *icmp.PacketConn) {
 
 		select {
 		case reply := <-replyCh:
-			wp.results <- reply.IP
+			wp.Results <- reply.IP
 		case <-time.After(2 * time.Second):
 		}
 		wp.cleanup(replyCh, echoID)
@@ -109,7 +109,7 @@ func (wp *WorkerPool) Start() {
 	for i := 1; i <= wp.workers; i++ {
 		wp.wg.Add(1)
 		//time.Sleep(20 * time.Millisecond)
-		go wp.worker(i, wp.Conn)
+		go wp.worker(i, wp.conn)
 	}
 
 }
@@ -118,11 +118,11 @@ func (wp *WorkerPool) AddJob(job net.IP) {
 	wp.jobQueue <- job
 }
 
-func (wp *WorkerPool) WaitForReplies() {
+func (wp *WorkerPool) Process() {
 
 	for {
 
-			result, err := ReadReply(wp.Conn, wp.logger)
+			result, err := ReadReply(wp.conn, wp.logger)
 			if err != nil {
 				if isConnectionClosed(err) {
 					return
@@ -146,10 +146,11 @@ func (wp *WorkerPool) WaitForReplies() {
 }
 
 func (wp *WorkerPool) Wait() {
-	defer wp.Conn.Close()
+	go wp.Process()
+	defer wp.conn.Close()
 	close(wp.jobQueue)
 	wp.wg.Wait()
-	close(wp.results)
+	close(wp.Results)
 }
 
 func isConnectionClosed(err error) bool {
@@ -181,7 +182,7 @@ func GenerateHosts(subnet string) ([]net.IP, error) {
 		ip := toByte(networkIPUint32 + uint32(i))
 		ipList = append(ipList, net.IP(ip))
 	}
-	fmt.Println(ipList)
+	//fmt.Println(ipList)
 	return ipList, nil
 }
 
@@ -237,7 +238,7 @@ func ReadReply(conn *icmp.PacketConn, pingLogger *logger.Logger) (*Result, error
 	if parsedMessage.Type == ipv4.ICMPTypeEchoReply {
 		body := parsedMessage.Body.(*icmp.Echo)
 
-		fmt.Printf("checking type for reply for body ID %v\n", body.ID)
+		//fmt.Printf("checking type for reply for body ID %v\n", body.ID)
 
 		proto := parsedMessage.Type.Protocol()
 		echoReplyLog := fmt.Sprintf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data)
@@ -246,7 +247,7 @@ func ReadReply(conn *icmp.PacketConn, pingLogger *logger.Logger) (*Result, error
 		fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s\n", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data)
 
 		result := &Result{
-			IP:     net.IP(peer.String()),
+			IP:     peer.String(),
 			BodyID: body.ID,
 		}
 
