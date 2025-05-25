@@ -46,16 +46,14 @@ Example:
 
 
 		wp.Start()
-		//go wp.Process()
+		go wp.Process()
 		wp.Wait()
 
 		pingLogger.Close()
-		liveIps := make([]string, 0) 
-		for ip := range wp.Results {
-    	liveIps = append(liveIps, ip)
+		for result := range wp.Results {
+    	fmt.Printf("Host %v is up with latency of %s!\n", result.IP, result.Duration)
 		}
 
-		fmt.Printf("%s\n", liveIps)
 
 	},
 }

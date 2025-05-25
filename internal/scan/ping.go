@@ -15,18 +15,24 @@ import (
 )
 
 type Result struct {
-	IP     string
-	BodyID int
+	IP       string
+	BodyID   int
+	Duration time.Duration
+}
+
+type Reply struct {
+	Result chan *Result
+	SentAt time.Time
 }
 
 type WorkerPool struct {
 	workers        int
 	jobQueue       chan net.IP
-	Results        chan string
+	Results        chan *Result
 	wg             *sync.WaitGroup
 	logger         *logger.Logger
 	conn           *icmp.PacketConn
-	pendingReplies map[int]chan *Result
+	pendingReplies map[int]Reply
 	mu             *sync.Mutex
 }
 
@@ -57,38 +63,41 @@ func NewWorkerPool(numOfWorkers int, jobQueue int, pingLogger *logger.Logger) *W
 	return &WorkerPool{
 		workers:        numOfWorkers,
 		jobQueue:       make(chan net.IP, jobQueue),
-		Results:        make(chan string, jobQueue),
+		Results:        make(chan *Result, jobQueue),
 		wg:             wg,
 		logger:         pingLogger,
 		conn:           conn,
-		pendingReplies: make(map[int]chan *Result),
+		pendingReplies: make(map[int]Reply),
 		mu:             &sync.Mutex{},
 	}
 }
 
 func (wp *WorkerPool) cleanup(replyCh chan *Result, echoID int) {
-
 	close(replyCh)
-
 	wp.mu.Lock()
 	delete(wp.pendingReplies, echoID)
 	wp.mu.Unlock()
 }
 
-func (wp *WorkerPool) worker(id int, conn *icmp.PacketConn) {
+func (wp *WorkerPool) worker(id int) {
 	defer wp.wg.Done()
 	for ip := range wp.jobQueue {
 
 		replyCh := make(chan *Result, 1)
 		echoID := generateEchoID(ip, id)
 
+		payload := Reply{
+			Result: replyCh,
+			SentAt: time.Now(),
+		}
+
 		wp.mu.Lock()
-		wp.pendingReplies[echoID] = replyCh
+		wp.pendingReplies[echoID] = payload
 		wp.mu.Unlock()
 
 		//fmt.Printf("Worker %d pinging IP %v with echoID %v\n", id, ip, echoID)
 
-		err := SendPing(ip, wp.logger, conn, echoID)
+		err := wp.SendPing(ip, echoID)
 		if err != nil {
 			fmt.Println(err)
 			wp.cleanup(replyCh, echoID)
@@ -96,7 +105,7 @@ func (wp *WorkerPool) worker(id int, conn *icmp.PacketConn) {
 
 		select {
 		case reply := <-replyCh:
-			wp.Results <- reply.IP
+			wp.Results <- reply
 		case <-time.After(2 * time.Second):
 		}
 		wp.cleanup(replyCh, echoID)
@@ -109,7 +118,7 @@ func (wp *WorkerPool) Start() {
 	for i := 1; i <= wp.workers; i++ {
 		wp.wg.Add(1)
 		//time.Sleep(20 * time.Millisecond)
-		go wp.worker(i, wp.conn)
+		go wp.worker(i)
 	}
 
 }
@@ -121,32 +130,29 @@ func (wp *WorkerPool) AddJob(job net.IP) {
 func (wp *WorkerPool) Process() {
 
 	for {
-
-			result, err := ReadReply(wp.conn, wp.logger)
-			if err != nil {
-				if isConnectionClosed(err) {
-					return
-				}
-				fmt.Println(err)
+		result, err := wp.ReadReply(wp.conn, wp.logger)
+		if err != nil {
+			if isConnectionClosed(err) {
+				return
 			}
-
-			if result != nil {
-
-				echoID := result.BodyID
-
-				wp.mu.Lock()
-				if replyCh, ok := wp.pendingReplies[echoID]; ok {
-
-					replyCh <- result
-
-				}
-				wp.mu.Unlock()
-			}
+			fmt.Println(err)
 		}
+
+		if result != nil {
+
+			echoID := result.BodyID
+
+			wp.mu.Lock()
+			if replyCh, ok := wp.pendingReplies[echoID]; ok {
+
+				replyCh.Result <- result
+			}
+			wp.mu.Unlock()
+		}
+	}
 }
 
 func (wp *WorkerPool) Wait() {
-	go wp.Process()
 	defer wp.conn.Close()
 	close(wp.jobQueue)
 	wp.wg.Wait()
@@ -154,7 +160,7 @@ func (wp *WorkerPool) Wait() {
 }
 
 func isConnectionClosed(err error) bool {
-  if err != nil && strings.Contains(err.Error(), "use of closed network connection") {
+	if err != nil && strings.Contains(err.Error(), "use of closed network connection") {
 		return true
 	}
 	return false
@@ -186,7 +192,7 @@ func GenerateHosts(subnet string) ([]net.IP, error) {
 	return ipList, nil
 }
 
-func SendPing(host net.IP, pingLogger *logger.Logger, conn *icmp.PacketConn, echoID int) error {
+func (wp *WorkerPool) SendPing(host net.IP, echoID int) error {
 
 	msg := icmp.Message{
 		Type: ipv4.ICMPTypeEcho,
@@ -200,7 +206,7 @@ func SendPing(host net.IP, pingLogger *logger.Logger, conn *icmp.PacketConn, ech
 	dst, err := net.ResolveIPAddr("ip4", host.String())
 	if err != nil {
 		errMsg := fmt.Sprintf(ErrResolveIPAddr.Error(), host.String(), err)
-		pingLogger.Log(errMsg)
+		wp.logger.Log(errMsg)
 		return fmt.Errorf(ErrResolveIPAddr.Error(), host.String(), err)
 	}
 
@@ -209,7 +215,7 @@ func SendPing(host net.IP, pingLogger *logger.Logger, conn *icmp.PacketConn, ech
 		return fmt.Errorf(ErrMarshalMsg.Error(), err)
 	}
 
-	_, err = conn.WriteTo(bmessage, dst)
+	_, err = wp.conn.WriteTo(bmessage, dst)
 	if err != nil {
 		return fmt.Errorf(ErrWrite.Error(), err)
 	}
@@ -217,7 +223,7 @@ func SendPing(host net.IP, pingLogger *logger.Logger, conn *icmp.PacketConn, ech
 	return nil
 }
 
-func ReadReply(conn *icmp.PacketConn, pingLogger *logger.Logger) (*Result, error) {
+func (wp *WorkerPool) ReadReply(conn *icmp.PacketConn, pingLogger *logger.Logger) (*Result, error) {
 	err := conn.SetReadDeadline(time.Now().Add(11 * time.Second))
 	if err != nil {
 		return nil, fmt.Errorf(ErrDeadline.Error(), err)
@@ -238,17 +244,24 @@ func ReadReply(conn *icmp.PacketConn, pingLogger *logger.Logger) (*Result, error
 	if parsedMessage.Type == ipv4.ICMPTypeEchoReply {
 		body := parsedMessage.Body.(*icmp.Echo)
 
+		wp.mu.Lock()
+		reply, _ := wp.pendingReplies[body.ID]
+		wp.mu.Unlock()
+
+		duration := time.Since(reply.SentAt)
+
 		//fmt.Printf("checking type for reply for body ID %v\n", body.ID)
 
 		proto := parsedMessage.Type.Protocol()
-		echoReplyLog := fmt.Sprintf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data)
+		echoReplyLog := fmt.Sprintf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
 		pingLogger.Log(echoReplyLog)
 
-		fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s\n", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data)
+		fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s\n", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
 
 		result := &Result{
-			IP:     peer.String(),
-			BodyID: body.ID,
+			IP:       peer.String(),
+			BodyID:   body.ID,
+			Duration: duration,
 		}
 
 		return result, nil
