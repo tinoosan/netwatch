@@ -18,7 +18,7 @@ Netwatch is a high-performance network scanning tool built in Go. It leverages r
 1. **Clone the repository:**
 
    ```bash
-   git clone https://github.com/yourusername/netwatch.git
+   git clone https://github.com/tinoosan/netwatch.git
    cd netwatch
    ```
 
