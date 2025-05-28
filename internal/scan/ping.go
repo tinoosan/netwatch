@@ -99,7 +99,7 @@ func (wp *WorkerPool) worker(id int) {
 
 		replyReceived := false
 
-		for i := 0; i < job.MaxRetries && !replyReceived; i++ {
+		for i := 0; i < job.MaxRetries-1 && !replyReceived; i++ {
 			job.Attempts = job.Attempts + 1
 			fmt.Printf("Attempt: %d Worker %d pinging IP %v with echoID %v\n", job.Attempts, id, job.Target, echoID)
 			err := wp.SendPing(job.Target, echoID, i)
