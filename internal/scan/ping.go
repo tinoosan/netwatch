@@ -15,9 +15,12 @@ import (
 )
 
 type Result struct {
-	IP       string
-	BodyID   int
-	Duration time.Duration
+	IP         string        `json:"ipAddress"`
+	BodyID     int           `json:"bodyID"`
+	Seq        int           `json:"sequenceNumber"`
+	Duration   time.Duration `json:"duration"`
+	Attempts   int           `json:"attempts"`
+	ReceivedAt time.Time
 }
 
 type Job struct {
@@ -30,13 +33,13 @@ type Job struct {
 }
 
 type WorkerPool struct {
-	workers     int
-	jobQueue    chan *Job
+	Workers     int
+	JobQueue    chan *Job
 	Results     chan *Result
+	PendingJobs map[int]*Job
 	wg          *sync.WaitGroup
 	logger      *logger.Logger
 	conn        *icmp.PacketConn
-	PendingJobs map[int]*Job
 	mu          *sync.Mutex
 }
 
@@ -65,8 +68,8 @@ func NewWorkerPool(numOfWorkers int, jobQueue int, pingLogger *logger.Logger) *W
 		fmt.Printf(ErrSocketConn.Error(), err)
 	}
 	return &WorkerPool{
-		workers:     numOfWorkers,
-		jobQueue:    make(chan *Job, jobQueue),
+		Workers:     numOfWorkers,
+		JobQueue:    make(chan *Job, jobQueue),
 		Results:     make(chan *Result, jobQueue),
 		wg:          wg,
 		logger:      pingLogger,
@@ -76,16 +79,86 @@ func NewWorkerPool(numOfWorkers int, jobQueue int, pingLogger *logger.Logger) *W
 	}
 }
 
-func (wp *WorkerPool) cleanup(replyCh chan *Result, echoID int) {
-	close(replyCh)
-	wp.mu.Lock()
-	delete(wp.PendingJobs, echoID)
-	wp.mu.Unlock()
+func (wp *WorkerPool) AddJob(job *Job) {
+	wp.JobQueue <- job
 }
 
-func (wp *WorkerPool) worker(id int) {
+func (wp *WorkerPool) Start() {
+
+	for i := 1; i <= wp.Workers; i++ {
+		wp.wg.Add(1)
+		//time.Sleep(20 * time.Millisecond)
+		go wp.Worker(i)
+	}
+
+}
+
+func (wp *WorkerPool) Process() {
+
+	for {
+		parsedMessage, peer, err := wp.ReadReply()
+		if err != nil {
+			if isConnectionClosed(err) {
+				return
+			}
+			fmt.Println(err)
+		}
+
+		if parsedMessage != nil {
+
+			if parsedMessage.Type == ipv4.ICMPTypeEchoReply {
+				body := parsedMessage.Body.(*icmp.Echo)
+
+				wp.mu.Lock()
+				job, _ := wp.PendingJobs[body.ID]
+				wp.mu.Unlock()
+
+				duration := time.Since(job.SentAt)
+
+				//fmt.Printf("checking type for reply for body ID %v\n", body.ID)
+
+				proto := parsedMessage.Type.Protocol()
+				echoReplyLog := fmt.Sprintf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
+				wp.logger.Log(echoReplyLog)
+				
+				fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s\n", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
+
+				result := &Result{
+					IP:         peer.String(),
+					BodyID:     body.ID,
+					Seq:        body.Seq,
+					Duration:   duration,
+					Attempts:   job.Attempts,
+					ReceivedAt: time.Now(),
+				}
+
+				wp.mu.Lock()
+				if job, ok := wp.PendingJobs[result.BodyID]; ok {
+
+					if len(job.Result) == 0 {
+
+						job.Result <- result
+					}
+
+				}
+				wp.mu.Unlock()
+
+			}
+		}
+
+	}
+}
+
+func (wp *WorkerPool) Wait() {
+	defer wp.conn.Close()
+	close(wp.JobQueue)
+	wp.wg.Wait()
+	close(wp.Results)
+}
+
+func (wp *WorkerPool) Worker(id int) {
 	defer wp.wg.Done()
-	for job := range wp.jobQueue {
+	for job := range wp.JobQueue {
 		replyCh := make(chan *Result, 1)
 		echoID := generateEchoID(job.Target, id)
 
@@ -121,74 +194,11 @@ func (wp *WorkerPool) worker(id int) {
 
 }
 
-func (wp *WorkerPool) Start() {
-
-	for i := 1; i <= wp.workers; i++ {
-		wp.wg.Add(1)
-		//time.Sleep(20 * time.Millisecond)
-		go wp.worker(i)
-	}
-
-}
-
-func (wp *WorkerPool) AddJob(job *Job) {
-	wp.jobQueue <- job
-}
-
-func (wp *WorkerPool) Process() {
-
-	for {
-		parsedMessage, peer, err := wp.ReadReply()
-		if err != nil {
-			if isConnectionClosed(err) {
-				return
-			}
-			fmt.Println(err)
-		}
-
-		if parsedMessage.Type == ipv4.ICMPTypeEchoReply {
-			body := parsedMessage.Body.(*icmp.Echo)
-
-			wp.mu.Lock()
-			job, _ := wp.PendingJobs[body.ID]
-			wp.mu.Unlock()
-
-			duration := time.Since(job.SentAt)
-
-			//fmt.Printf("checking type for reply for body ID %v\n", body.ID)
-
-			proto := parsedMessage.Type.Protocol()
-			echoReplyLog := fmt.Sprintf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
-			wp.logger.Log(echoReplyLog)
-
-			fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s\n", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
-
-			result := &Result{
-				IP:       peer.String(),
-				BodyID:   body.ID,
-				Duration: duration,
-			}
-
-			wp.mu.Lock()
-			if job, ok := wp.PendingJobs[result.BodyID]; ok {
-
-				if len(job.Result) == 0 {
-
-					job.Result <- result
-				}
-
-			}
-			wp.mu.Unlock()
-
-		}
-	}
-}
-
-func (wp *WorkerPool) Wait() {
-	defer wp.conn.Close()
-	close(wp.jobQueue)
-	wp.wg.Wait()
-	close(wp.Results)
+func (wp *WorkerPool) cleanup(replyCh chan *Result, echoID int) {
+	close(replyCh)
+	wp.mu.Lock()
+	delete(wp.PendingJobs, echoID)
+	wp.mu.Unlock()
 }
 
 func isConnectionClosed(err error) bool {
@@ -303,6 +313,6 @@ func toByte(ipUint32 uint32) []byte {
 	return b
 }
 
-func generateEchoID(ip net.IP, workerId int) int {
-	return (os.Getpid() & 0xffff) ^ (workerId << 8) ^ (int(ipToUint32(ip)))&0xffff
+func generateEchoID(ip net.IP, WorkerId int) int {
+	return (os.Getpid() & 0xffff) ^ (WorkerId << 8) ^ (int(ipToUint32(ip)))&0xffff
 }
