@@ -37,11 +37,16 @@ Example:
 			fmt.Println(err)
 		}
 
-		wp := scan.NewWorkerPool(len(hosts), len(hosts), pingLogger)
+		wp := scan.NewWorkerPool(20, len(hosts), pingLogger)
 
 
 		for _, host := range hosts {
-			wp.AddJob(host)
+			job := &scan.Job{
+				Target: host,
+				Attempts: 0,
+				MaxRetries: 2,
+			}
+			wp.AddJob(job)
 		}
 
 

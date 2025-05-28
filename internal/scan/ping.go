@@ -20,20 +20,24 @@ type Result struct {
 	Duration time.Duration
 }
 
-type Reply struct {
-	Result chan *Result
-	SentAt time.Time
+type Job struct {
+	ID         int
+	Target     net.IP
+	Result     chan *Result
+	SentAt     time.Time
+	Attempts   int
+	MaxRetries int
 }
 
 type WorkerPool struct {
-	workers        int
-	jobQueue       chan net.IP
-	Results        chan *Result
-	wg             *sync.WaitGroup
-	logger         *logger.Logger
-	conn           *icmp.PacketConn
-	pendingReplies map[int]Reply
-	mu             *sync.Mutex
+	workers     int
+	jobQueue    chan *Job
+	Results     chan *Result
+	wg          *sync.WaitGroup
+	logger      *logger.Logger
+	conn        *icmp.PacketConn
+	PendingJobs map[int]*Job
+	mu          *sync.Mutex
 }
 
 const (
@@ -61,56 +65,60 @@ func NewWorkerPool(numOfWorkers int, jobQueue int, pingLogger *logger.Logger) *W
 		fmt.Printf(ErrSocketConn.Error(), err)
 	}
 	return &WorkerPool{
-		workers:        numOfWorkers,
-		jobQueue:       make(chan net.IP, jobQueue),
-		Results:        make(chan *Result, jobQueue),
-		wg:             wg,
-		logger:         pingLogger,
-		conn:           conn,
-		pendingReplies: make(map[int]Reply),
-		mu:             &sync.Mutex{},
+		workers:     numOfWorkers,
+		jobQueue:    make(chan *Job, jobQueue),
+		Results:     make(chan *Result, jobQueue),
+		wg:          wg,
+		logger:      pingLogger,
+		conn:        conn,
+		PendingJobs: make(map[int]*Job),
+		mu:          &sync.Mutex{},
 	}
 }
 
 func (wp *WorkerPool) cleanup(replyCh chan *Result, echoID int) {
 	close(replyCh)
 	wp.mu.Lock()
-	delete(wp.pendingReplies, echoID)
+	delete(wp.PendingJobs, echoID)
 	wp.mu.Unlock()
 }
 
 func (wp *WorkerPool) worker(id int) {
 	defer wp.wg.Done()
-	for ip := range wp.jobQueue {
-
+	for job := range wp.jobQueue {
 		replyCh := make(chan *Result, 1)
-		echoID := generateEchoID(ip, id)
+		echoID := generateEchoID(job.Target, id)
 
-		payload := Reply{
-			Result: replyCh,
-			SentAt: time.Now(),
-		}
+		job.ID = echoID
+		job.Result = replyCh
+		job.SentAt = time.Now()
 
 		wp.mu.Lock()
-		wp.pendingReplies[echoID] = payload
+		wp.PendingJobs[echoID] = job
 		wp.mu.Unlock()
 
-		//fmt.Printf("Worker %d pinging IP %v with echoID %v\n", id, ip, echoID)
+		replyReceived := false
 
-		err := wp.SendPing(ip, echoID)
-		if err != nil {
-			fmt.Println(err)
-			wp.cleanup(replyCh, echoID)
+		for i := 0; i < job.MaxRetries && !replyReceived; i++ {
+			job.Attempts = job.Attempts + 1
+			fmt.Printf("Attempt: %d Worker %d pinging IP %v with echoID %v\n", job.Attempts, id, job.Target, echoID)
+			err := wp.SendPing(job.Target, echoID, i)
+			if err != nil {
+				fmt.Println(err)
+				wp.cleanup(replyCh, echoID)
+			}
 		}
 
 		select {
 		case reply := <-replyCh:
 			wp.Results <- reply
+			replyReceived = true
 		case <-time.After(2 * time.Second):
 		}
 		wp.cleanup(replyCh, echoID)
 
 	}
+
 }
 
 func (wp *WorkerPool) Start() {
@@ -123,14 +131,14 @@ func (wp *WorkerPool) Start() {
 
 }
 
-func (wp *WorkerPool) AddJob(job net.IP) {
+func (wp *WorkerPool) AddJob(job *Job) {
 	wp.jobQueue <- job
 }
 
 func (wp *WorkerPool) Process() {
 
 	for {
-		result, err := wp.ReadReply(wp.conn, wp.logger)
+		parsedMessage, peer, err := wp.ReadReply()
 		if err != nil {
 			if isConnectionClosed(err) {
 				return
@@ -138,16 +146,40 @@ func (wp *WorkerPool) Process() {
 			fmt.Println(err)
 		}
 
-		if result != nil {
-
-			echoID := result.BodyID
+		if parsedMessage.Type == ipv4.ICMPTypeEchoReply {
+			body := parsedMessage.Body.(*icmp.Echo)
 
 			wp.mu.Lock()
-			if replyCh, ok := wp.pendingReplies[echoID]; ok {
+			job, _ := wp.PendingJobs[body.ID]
+			wp.mu.Unlock()
 
-				replyCh.Result <- result
+			duration := time.Since(job.SentAt)
+
+			//fmt.Printf("checking type for reply for body ID %v\n", body.ID)
+
+			proto := parsedMessage.Type.Protocol()
+			echoReplyLog := fmt.Sprintf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
+			wp.logger.Log(echoReplyLog)
+
+			fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s\n", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
+
+			result := &Result{
+				IP:       peer.String(),
+				BodyID:   body.ID,
+				Duration: duration,
+			}
+
+			wp.mu.Lock()
+			if job, ok := wp.PendingJobs[result.BodyID]; ok {
+
+				if len(job.Result) == 0 {
+
+					job.Result <- result
+				}
+
 			}
 			wp.mu.Unlock()
+
 		}
 	}
 }
@@ -192,13 +224,13 @@ func GenerateHosts(subnet string) ([]net.IP, error) {
 	return ipList, nil
 }
 
-func (wp *WorkerPool) SendPing(host net.IP, echoID int) error {
+func (wp *WorkerPool) SendPing(host net.IP, echoID int, seq int) error {
 
 	msg := icmp.Message{
 		Type: ipv4.ICMPTypeEcho,
 		Body: &icmp.Echo{
 			ID:   echoID,
-			Seq:  0,
+			Seq:  seq,
 			Data: []byte(""),
 		},
 	}
@@ -223,50 +255,26 @@ func (wp *WorkerPool) SendPing(host net.IP, echoID int) error {
 	return nil
 }
 
-func (wp *WorkerPool) ReadReply(conn *icmp.PacketConn, pingLogger *logger.Logger) (*Result, error) {
-	err := conn.SetReadDeadline(time.Now().Add(11 * time.Second))
+func (wp *WorkerPool) ReadReply() (*icmp.Message, net.Addr, error) {
+	var peer net.Addr
+	err := wp.conn.SetReadDeadline(time.Now().Add(11 * time.Second))
 	if err != nil {
-		return nil, fmt.Errorf(ErrDeadline.Error(), err)
+		return nil, peer, fmt.Errorf(ErrDeadline.Error(), err)
 	}
 
 	breply := make([]byte, 512)
-	n, peer, err := conn.ReadFrom(breply)
+	n, peer, err := wp.conn.ReadFrom(breply)
 	if err != nil {
-		return nil, fmt.Errorf(ErrRead.Error(), err)
+		return nil, peer, fmt.Errorf(ErrRead.Error(), err)
 	}
 
 	parsedMessage, err := icmp.ParseMessage(IPv4Protocol, breply[:n])
 
 	if err != nil {
-		return nil, fmt.Errorf(ErrParse.Error(), err)
+		return nil, peer, fmt.Errorf(ErrParse.Error(), err)
 	}
 
-	if parsedMessage.Type == ipv4.ICMPTypeEchoReply {
-		body := parsedMessage.Body.(*icmp.Echo)
-
-		wp.mu.Lock()
-		reply, _ := wp.pendingReplies[body.ID]
-		wp.mu.Unlock()
-
-		duration := time.Since(reply.SentAt)
-
-		//fmt.Printf("checking type for reply for body ID %v\n", body.ID)
-
-		proto := parsedMessage.Type.Protocol()
-		echoReplyLog := fmt.Sprintf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
-		pingLogger.Log(echoReplyLog)
-
-		fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s\n", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
-
-		result := &Result{
-			IP:       peer.String(),
-			BodyID:   body.ID,
-			Duration: duration,
-		}
-
-		return result, nil
-	}
-	return nil, nil
+	return parsedMessage, peer, nil
 }
 
 func ipToUint32(ip net.IP) uint32 {
