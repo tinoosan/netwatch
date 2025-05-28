@@ -131,7 +131,6 @@ func (wp *WorkerPool) Process() {
 							ReceivedAt: time.Now(),
 						}
 						if len(job.Result) == 0 {
-
 							job.Result <- result
 						}
 						continue
@@ -155,11 +154,11 @@ func (wp *WorkerPool) Wait() {
 func (wp *WorkerPool) Worker(id int) {
 	defer wp.wg.Done()
 	for job := range wp.JobQueue {
-		replyCh := make(chan *Result, 1)
+		resultCh := make(chan *Result, 1)
 		echoID := generateEchoID(job.Target, id)
 
 		job.ID = echoID
-		job.Result = replyCh
+		job.Result = resultCh
 		job.SentAt = time.Now()
 
 		wp.mu.Lock()
@@ -168,31 +167,31 @@ func (wp *WorkerPool) Worker(id int) {
 
 		replyReceived := false
 		attempts := 0
-
-		for attempts < job.MaxRetries && !replyReceived  {
+		seq := 0
+		for attempts < job.MaxRetries && !replyReceived {
 			job.Attempts = job.Attempts + 1
 			fmt.Printf("Attempt: %d Worker %d pinging IP %v with echoID %v\n", job.Attempts, id, job.Target, echoID)
-			err := wp.SendPing(job.Target, echoID, attempts)
+			err := wp.SendPing(job.Target, echoID, seq)
 			if err != nil {
 				fmt.Println(err)
-				close(replyCh)
 			}
 			attempts++
+			seq++
 		}
 
 		select {
-		case reply := <-replyCh:
-			wp.Results <- reply
+		case result := <-resultCh:
+			wp.Results <- result
 			replyReceived = true
 		case <-time.After(2 * time.Second):
+			wp.cleanup(resultCh, echoID)
 		}
-		wp.cleanup(replyCh, echoID)
 
 	}
 }
 
-func (wp *WorkerPool) cleanup(replyCh chan *Result, echoID int) {
-	close(replyCh)
+func (wp *WorkerPool) cleanup(resultCh chan *Result, echoID int) {
+	close(resultCh)
 	wp.mu.Lock()
 	delete(wp.PendingJobs, echoID)
 	wp.mu.Unlock()
