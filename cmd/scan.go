@@ -41,7 +41,12 @@ Example:
 
 
 		for _, host := range hosts {
-			wp.AddJob(host)
+			job := &scan.Job{
+				Target: host,
+				Attempts: 0,
+				MaxRetries: 2,
+			}
+			wp.AddJob(job)
 		}
 
 
