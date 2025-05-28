@@ -14,7 +14,7 @@ import (
 	"golang.org/x/net/ipv4"
 )
 
-type Result struct {
+type PingResult struct {
 	IP         string    `json:"ipAddress"`
 	BodyID     int       `json:"bodyID"`
 	Seq        int       `json:"sequenceNumber"`
@@ -26,7 +26,7 @@ type Result struct {
 type Job struct {
 	ID         int
 	Target     net.IP
-	Result     chan *Result
+	Result     chan *PingResult
 	SentAt     time.Time
 	Attempts   int
 	MaxRetries int
@@ -35,7 +35,7 @@ type Job struct {
 type WorkerPool struct {
 	Workers     int
 	JobQueue    chan *Job
-	Results     chan *Result
+	Results     chan *PingResult
 	PendingJobs map[int]*Job
 	wg          *sync.WaitGroup
 	logger      *logger.Logger
@@ -69,7 +69,7 @@ func NewWorkerPool(numOfWorkers int, jobQueue int, pingLogger *logger.Logger) *W
 	return &WorkerPool{
 		Workers:     numOfWorkers,
 		JobQueue:    make(chan *Job, jobQueue),
-		Results:     make(chan *Result, jobQueue),
+		Results:     make(chan *PingResult, jobQueue),
 		wg:          wg,
 		logger:      pingLogger,
 		conn:        conn,
@@ -122,7 +122,7 @@ func (wp *WorkerPool) Process() {
 						wp.logger.Log(echoReplyLog)
 						fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s\n", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
 
-						result := &Result{
+						result := &PingResult{
 							IP:         peer.String(),
 							BodyID:     body.ID,
 							Seq:        body.Seq,
@@ -154,7 +154,7 @@ func (wp *WorkerPool) Wait() {
 func (wp *WorkerPool) Worker(id int) {
 	defer wp.wg.Done()
 	for job := range wp.JobQueue {
-		resultCh := make(chan *Result, 1)
+		resultCh := make(chan *PingResult, 1)
 		echoID := generateEchoID(job.Target, id)
 
 		job.ID = echoID
@@ -166,31 +166,31 @@ func (wp *WorkerPool) Worker(id int) {
 		wp.mu.Unlock()
 
 		replyReceived := false
-		attempts := 0
+		attempts := 1
 		seq := 0
-		for attempts < job.MaxRetries && !replyReceived {
+		for attempts <= job.MaxRetries && !replyReceived {
 			job.Attempts = job.Attempts + 1
-			fmt.Printf("Attempt: %d Worker %d pinging IP %v with echoID %v\n", job.Attempts, id, job.Target, echoID)
+			//fmt.Printf("Attempt: %d Worker %d pinging IP %v with echoID %v\n", job.Attempts, id, job.Target, echoID)
 			err := wp.SendPing(job.Target, echoID, seq)
 			if err != nil {
 				fmt.Println(err)
 			}
 			attempts++
 			seq++
-		}
 
-		select {
-		case result := <-resultCh:
-			wp.Results <- result
-			replyReceived = true
-		case <-time.After(2 * time.Second):
-			wp.cleanup(resultCh, echoID)
-		}
+			select {
+			case result := <-resultCh:
+				wp.Results <- result
+				replyReceived = true
+			case <-time.After(2 * time.Second):
 
+			}
+		}
+				wp.cleanup(resultCh, echoID)
 	}
 }
 
-func (wp *WorkerPool) cleanup(resultCh chan *Result, echoID int) {
+func (wp *WorkerPool) cleanup(resultCh chan *PingResult, echoID int) {
 	close(resultCh)
 	wp.mu.Lock()
 	delete(wp.PendingJobs, echoID)
