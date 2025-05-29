@@ -78,6 +78,48 @@ func NewWorkerPool(numOfWorkers int, jobQueue int, pingLogger *logger.Logger) *W
 	}
 }
 
+func (wp *WorkerPool) Worker(id int) {
+	defer wp.wg.Done()
+	for job := range wp.JobQueue {
+		resultCh := make(chan *PingResult, 1)
+		echoID := generateEchoID(job.Target, id)
+
+		job.ID = echoID
+		job.Result = resultCh
+		job.SentAt = time.Now()
+
+		wp.mu.Lock()
+		wp.PendingJobs[echoID] = job
+		wp.mu.Unlock()
+
+		replyReceived := false
+		attempts := 1
+		seq := 0
+		for attempts <= job.MaxRetries && !replyReceived {
+			job.Attempts = job.Attempts + 1
+			//fmt.Printf("Attempt: %d Worker %d pinging IP %v with echoID %v\n", job.Attempts, id, job.Target, echoID)
+			err := wp.SendPing(job.Target, echoID, seq)
+			if err != nil {
+				fmt.Println(err)
+			}
+			attempts++
+			seq++
+
+			select {
+			case result := <-resultCh:
+				wp.Results <- result
+				replyReceived = true
+				time.Sleep(1 * time.Second)
+			case <-time.After(2 * time.Second):
+			}
+		} 
+		if replyReceived {
+			wp.cleanup(resultCh, echoID)
+		}
+	}
+}
+
+
 func (wp *WorkerPool) AddJob(job *Job) {
 	wp.JobQueue <- job
 }
@@ -151,44 +193,6 @@ func (wp *WorkerPool) Wait() {
 	close(wp.Results)
 }
 
-func (wp *WorkerPool) Worker(id int) {
-	defer wp.wg.Done()
-	for job := range wp.JobQueue {
-		resultCh := make(chan *PingResult, 1)
-		echoID := generateEchoID(job.Target, id)
-
-		job.ID = echoID
-		job.Result = resultCh
-		job.SentAt = time.Now()
-
-		wp.mu.Lock()
-		wp.PendingJobs[echoID] = job
-		wp.mu.Unlock()
-
-		replyReceived := false
-		attempts := 1
-		seq := 0
-		for attempts <= job.MaxRetries && !replyReceived {
-			job.Attempts = job.Attempts + 1
-			//fmt.Printf("Attempt: %d Worker %d pinging IP %v with echoID %v\n", job.Attempts, id, job.Target, echoID)
-			err := wp.SendPing(job.Target, echoID, seq)
-			if err != nil {
-				fmt.Println(err)
-			}
-			attempts++
-			seq++
-
-			select {
-			case result := <-resultCh:
-				wp.Results <- result
-				replyReceived = true
-			case <-time.After(2 * time.Second):
-
-			}
-		}
-				wp.cleanup(resultCh, echoID)
-	}
-}
 
 func (wp *WorkerPool) cleanup(resultCh chan *PingResult, echoID int) {
 	close(resultCh)
