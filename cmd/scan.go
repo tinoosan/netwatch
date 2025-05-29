@@ -6,7 +6,9 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -30,7 +32,10 @@ Example:
 	Run: func(cmd *cobra.Command, args []string) {
 
 		subnet, _ := cmd.Flags().GetString("subnet")
-	  output, _ := cmd.Flags().GetString("output")
+		ports, err := cmd.Flags().GetStringSlice("port")
+		if err != nil {
+			fmt.Println("Error: ", err)
+		}
 
 		//fmt.Printf("flags set: subnet %s | output %s\n", subnet, output)
 
@@ -57,46 +62,81 @@ Example:
 		pingLogger.Close()
 
 		type Data struct {
-			BodyID int
-			Seq int
-			Duration string
-			Attempts int
-			ReceivedAt time.Time
+			Ports   []string `json:"openPorts"`
+			Latency string   `json:"latency"`
 		}
 
+		scanLog := make(map[string]Data)
 
-		resultsJson := make(map[string]Data)
+		filename := "scan.json"
+
+		f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			fmt.Println("Error: ", err)
+		}
+
 		for result := range wp.Results {
 			data := Data{
-				BodyID: result.BodyID,
-				Seq: result.Seq,
-				Duration: result.Duration,
-				Attempts: result.Attempts,
-				ReceivedAt: result.ReceivedAt,
+				Latency: result.Duration,
 			}
-			resultsJson[result.IP] = data
 
-			if output == "text" {
-			fmt.Printf("Host %v is up with latency of %s!\n", result.IP, result.Duration)
+			switch {
+			case len(ports) > 0:
+				for _, port := range ports {
+					addr := net.JoinHostPort(result.IP, port)
+					if err != nil {
+						fmt.Println(err)
+					}
+					fmt.Printf("scanning port %v on host %v\n", port, result.IP)
+					conn, err := net.DialTimeout("tcp", addr, time.Duration(1*time.Second))
+					if err == nil {
+						fmt.Println("Port", port, "open on host", result.IP)
+						data.Ports = append(data.Ports, port)
+
+						buffer := make([]byte, 1024)
+						numBytesRead, err := conn.Read(buffer)
+						if err == nil {
+							fmt.Printf("Banner: %s\n", buffer[0:numBytesRead])
+						}
+						conn.Close()
+					} else {
+						fmt.Println("Error", err)
+					}
+					scanLog[result.IP] = data
+				}
+
+			default:
+				for i := 1; i < 65535; i++ {
+					port := strconv.FormatInt(int64(i), 10)
+					hostPort := net.JoinHostPort(result.IP, port)
+					if err != nil {
+						fmt.Println(err)
+					}
+					fmt.Printf("scanning port %v on host %v\n", port, result.IP)
+					conn, err := net.DialTimeout("tcp", hostPort, time.Duration(1*time.Second))
+					if err == nil {
+						fmt.Println("Port", port, "open on host", result.IP)
+						data.Ports = append(data.Ports, port)
+						buffer := make([]byte, 1024)
+						numBytesRead, err := conn.Read(buffer)
+						if err == nil {
+							fmt.Printf("Banner: %s\n", buffer[0:numBytesRead])
+						}
+						conn.Close()
+					} else {
+						fmt.Println("Error:", err)
+					}
+				}
 			}
 		}
-			res, err := json.MarshalIndent(resultsJson," ", "	")
-			if err != nil {
-				fmt.Println(err)
-			}
+		dataJSON, err := json.MarshalIndent(&scanLog, "", " ")
+		if err != nil {
+			fmt.Println("Error: ", err)
+		}
 
-			f, err := os.OpenFile("scan.json", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if err != nil {
-				fmt.Printf("json file could not be created: %v\n", err)
-			}
-
-			_, err = f.WriteString(string(res)+"\n")
-			if err != nil {
-				fmt.Println(err)
-			}
-
-		if output == "json" {
-			fmt.Println(string(res))
+		_, err = f.WriteString(string(dataJSON))
+		if err != nil {
+			fmt.Println("Error: ", err)
 		}
 
 	},
@@ -115,5 +155,5 @@ func init() {
 	// is called directly, e.g.:
 	// scanCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 	scanCmd.Flags().StringP("subnet", "s", "192.168.0.0/24", "CIDR block of the subnet to scan")
-	scanCmd.Flags().StringP("output", "o", "text", "Output format: text or json")
+	scanCmd.Flags().StringSliceP("port", "p", nil, "Port(s) to scan")
 }
