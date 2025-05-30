@@ -4,7 +4,11 @@ Copyright © 2025 NAME HERE <EMAIL ADDRESS>
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"strconv"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tinoosan/netwatch/internal/logger"
@@ -27,38 +31,130 @@ Example:
 	Run: func(cmd *cobra.Command, args []string) {
 
 		subnet, _ := cmd.Flags().GetString("subnet")
-		//output, _ := cmd.Flags().GetString("output")
+		ports, err := cmd.Flags().GetStringSlice("port")
+		if err != nil {
+			fmt.Println("Error: ", err)
+		}
+		workers, _ := cmd.Flags().GetInt("workers")
+
+		start := time.Now()
 
 		//fmt.Printf("flags set: subnet %s | output %s\n", subnet, output)
-
 
 		hosts, err := scan.GenerateHosts(subnet)
 		if err != nil {
 			fmt.Println(err)
 		}
 
-		wp := scan.NewWorkerPool(len(hosts), len(hosts), pingLogger)
 
+		wp := scan.NewWorkerPool(workers, len(hosts), pingLogger)
 
 		for _, host := range hosts {
 			job := &scan.Job{
-				Target: host,
-				Attempts: 0,
+				Target:     host,
+				Attempts:   0,
 				MaxRetries: 2,
 			}
 			wp.AddJob(job)
 		}
-
 
 		wp.Start()
 		go wp.Process()
 		wp.Wait()
 
 		pingLogger.Close()
-		for result := range wp.Results {
-    	fmt.Printf("Host %v is up with latency of %s!\n", result.IP, result.Duration)
+
+		type Data struct {
+			Ports   []string `json:"openPorts"`
+			Latency string   `json:"latency"`
 		}
 
+		filename := "scan.json"
+
+		f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			fmt.Println("Error: ", err)
+		}
+
+		defer f.Close()
+
+		var liveIPs []*scan.PingResult
+
+		for result := range wp.Results {
+			liveIPs = append(liveIPs, result)
+		}
+
+		jobQueue := len(liveIPs) * len(ports)
+		portWP := scan.NewPortWorkerPool(workers, jobQueue)
+		switch {
+		case len(ports) > 0:
+			for _, result := range liveIPs {
+				for _, port := range ports {
+					job := &scan.PortJob{
+						IP:      result.IP,
+						Port:    port,
+						Latency: result.Duration,
+						Success: false,
+					}
+					fmt.Printf("adding job %+v to queue\n", job)
+					portWP.AddJob(job)
+				}
+			}
+			portWP.Start()
+			portWP.Wait()
+		default:
+			jobQueue = len(liveIPs) * 65535
+			for _, result := range liveIPs {
+				for i := 1; i < 65535; i++ {
+					port := strconv.FormatInt(int64(i), 10)
+					job := &scan.PortJob{
+						IP:      result.IP,
+						Port:    port,
+						Latency: result.Duration,
+						Success: false,
+					}
+					fmt.Printf("adding job %+v to queue\n", job)
+					portWP.AddJob(job)
+				}
+			}
+			portWP.Start()
+			portWP.Wait()
+		}
+
+		var jobResults []*scan.PortJob
+
+		for result := range portWP.Results {
+			fmt.Printf("retreiving result %+v\n", result)
+			jobResults = append(jobResults, result)
+		}
+
+		scanLog := make(map[string]Data)
+
+		for _, job := range jobResults {
+			data, exists := scanLog[job.IP]
+			if !exists {
+				data = Data{
+					Ports: []string{},
+					Latency: job.Latency,
+				}
+			}
+				data.Ports = append(data.Ports, job.Port)
+			  scanLog[job.IP] = data
+		}
+
+		dataJSON, err := json.MarshalIndent(&scanLog, "", " ")
+		if err != nil {
+			fmt.Println("Error: ", err)
+		}
+
+		_, err = f.WriteString(string(dataJSON))
+		if err != nil {
+			fmt.Println("Error: ", err)
+		}
+
+
+		duration := time.Since(start)
+		fmt.Printf("Scan complete! Duration: %s\n", duration)
 
 	},
 }
@@ -75,6 +171,7 @@ func init() {
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
 	// scanCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
-	scanCmd.Flags().StringP("subnet", "s", "192.168.1.0/24", "CIDR block of the subnet to scan")
-	scanCmd.Flags().StringP("output", "o", "text", "Output format: text or json")
+	scanCmd.Flags().StringP("subnet", "s", "192.168.0.0/24", "CIDR block of the subnet to scan")
+	scanCmd.Flags().StringSliceP("port", "p", nil, "Port(s) to scan")
+	scanCmd.Flags().IntP("workers", "w", 20, "Number of concurrent scans")
 }
