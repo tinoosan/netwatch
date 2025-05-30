@@ -131,7 +131,6 @@ func (wp *WorkerPool) Start() {
 		//time.Sleep(20 * time.Millisecond)
 		go wp.Worker(i)
 	}
-
 }
 
 func (wp *WorkerPool) Process() {
@@ -172,10 +171,7 @@ func (wp *WorkerPool) Process() {
 							Attempts:   job.Attempts,
 							ReceivedAt: time.Now(),
 						}
-						if len(job.Result) == 0 {
 							job.Result <- result
-						}
-						continue
 					}
 					continue
 				}
