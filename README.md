@@ -1,51 +1,49 @@
 # Netwatch
 
-Netwatch is a self-hosted CLI-based network monitoring tool built in Go. It performs ICMP (ping) scans over local subnets to identify active devices and log their availability.
-
-It uses raw socket operations to send and receive ICMP echo requests concurrently using a worker pool architecture, providing high-speed scanning capabilities with low overhead.
+Netwatch is a self-hosted CLI-based network monitoring tool written in Go. It performs high-speed ICMP (ping) scans to discover live hosts on a subnet and can optionally scan for open TCP ports on those hosts. It's designed for hands-on systems programming practice with a focus on concurrency, raw network operations, and structured output.
 
 ## Features
 
-- Concurrent ICMP scanning using Go worker pools  
-- Raw socket packet creation and parsing with `golang.org/x/net/icmp`  
-- CIDR block parsing and host IP generation  
-- Unique echo ID coordination for matching replies to sent pings  
-- Log output to file via internal logger  
-- Structured result collection for later processing or display  
+- Concurrent ICMP host discovery with custom echo ID tracking  
+- Raw socket packet creation using `golang.org/x/net/icmp`  
+- TCP port scanning with optional banner grabbing  
+- CIDR parsing and host IP range generation  
+- Worker pool architecture for parallelized scanning  
+- Logs structured ping and port scan results to file  
+- Supports human-readable and JSON output  
 
 ## Usage
 
-Run a ping scan over a subnet:
+### Ping scan only
 
-```sh
+```
 netwatch scan --subnet 192.168.1.0/24
 ```
 
-Default output is in human-readable text format. JSON output will be added in a future release.
+### Ping + TCP port scan
 
-### Example Output
-
-```text
-20 bytes from 192.168.1.5: pid=21345, icmp_type=0, icmp_seq=1, time=1.27ms
-Host 192.168.1.5 is up with latency of 1.27ms!
+```
+netwatch scan --subnet 192.168.1.0/24 --port 22,80,443
 ```
 
-## Design Overview
+## Example Output
 
-- **WorkerPool** manages a set of goroutines that each send ICMP echo requests and wait for responses.  
-- Each job contains an IP target, a channel for the result, and retry settings.  
-- The system tracks each ICMP packet sent by assigning a unique echo ID, which combines process ID, worker ID, and the target IP.  
-- Incoming ICMP replies are parsed and matched against the echo ID to retrieve the original job metadata.  
-- Hosts are generated from a parsed CIDR subnet using custom `toUint32` and `toByte` utilities to iterate over IPs.  
+```
+4 bytes from 192.168.0.1: pid=62291, icmp_type=echo reply, icmp_seq=0, data=, time=7.38ms  
+4 bytes from 192.168.0.61: pid=46447, icmp_type=echo reply, icmp_seq=0, data=, time=22.05ms  
+4 bytes from 192.168.0.57: pid=56683, icmp_type=echo reply, icmp_seq=0, data=, time=49.38ms  
+4 bytes from 192.168.0.108: pid=65342, icmp_type=echo reply, icmp_seq=0, data=, time=237.53ms  
+4 bytes from 192.168.0.208: pid=56194, icmp_type=echo reply, icmp_seq=0, data=, time=1.09ms  
+4 bytes from 192.168.0.230: pid=42164, icmp_type=echo reply, icmp_seq=0, data=, time=8.67ms  
+4 bytes from 192.168.0.243: pid=58017, icmp_type=echo reply, icmp_seq=0, data=, time=10.58ms  
 
-## Example Scan Flow
+Port 22 open on host 192.168.0.208  
+Banner: SSH-2.0-OpenSSH_10.0
 
-1. Subnet `192.168.1.0/24` is parsed to generate all host IPs.  
-2. Each IP is wrapped in a `Job` and dispatched to the worker queue.  
-3. Workers send ICMP echo requests with unique identifiers.  
-4. A listener goroutine continuously reads ICMP replies and matches them to pending jobs.  
-5. Results are passed through a channel and printed to the console.  
-6. All ICMP messages and failures are logged to `scan.log`.
+Port 22 open on host 192.168.0.230  
+Banner: SSH-2.0-dropbear_2014.65
+>U@Ǻpcurve25519-sha256@libssh.org,ecdh-sha2-nistp521,...,ssh-rsa,ssh-dss,...,hmac-sha1,hmac-md5,...none...
+```
 
 ## Logging
 
@@ -53,8 +51,6 @@ Logs are saved to a file named `scan.log` using the internal `logger` package. E
 
 ## Planned Features
 
-- TCP port scanning mode  
-- JSON output support  
 - Log filtering by IP or time  
 - HTTP server mode for browser-based monitoring  
 - Persistent database integration for tracking changes over time  
@@ -66,7 +62,7 @@ Logs are saved to a file named `scan.log` using the internal `logger` package. E
 
 ## Building
 
-```sh
+```
 go build -o netwatch ./cmd
 ```
 
@@ -81,4 +77,3 @@ Tino Onyeme
 ---
 
 This is a work in progress project built for hands-on systems development and learning. Expect unfinished components and ongoing refactoring.
-
