@@ -14,7 +14,7 @@ func TestLog(t *testing.T) {
 		fileDir := "./"+fileName
 
 		logger := logger.New(fileName, "test")
-		err := logger.Log(fileName, "This is a test message")
+		err := logger.Log("This is a test message")
 		if err != nil {
 			t.Errorf("expected nil got %v", err)
 		}

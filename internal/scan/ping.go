@@ -14,29 +14,32 @@ import (
 	"golang.org/x/net/ipv4"
 )
 
-type Result struct {
-	IP       string
-	BodyID   int
-	Duration time.Duration
+type PingResult struct {
+	IP         string    `json:"ipAddress"`
+	BodyID     int       `json:"bodyID"`
+	Seq        int       `json:"sequenceNumber"`
+	Duration   string    `json:"duration"`
+	Attempts   int       `json:"attempts"`
+	ReceivedAt time.Time `json:"receivedAt"`
 }
 
 type Job struct {
 	ID         int
 	Target     net.IP
-	Result     chan *Result
+	Result     chan *PingResult
 	SentAt     time.Time
 	Attempts   int
 	MaxRetries int
 }
 
 type WorkerPool struct {
-	workers     int
-	jobQueue    chan *Job
-	Results     chan *Result
+	Workers     int
+	JobQueue    chan *Job
+	Results     chan *PingResult
+	PendingJobs map[int]*Job
 	wg          *sync.WaitGroup
 	logger      *logger.Logger
 	conn        *icmp.PacketConn
-	PendingJobs map[int]*Job
 	mu          *sync.Mutex
 }
 
@@ -46,16 +49,15 @@ const (
 )
 
 var (
-	ErrResolveIPAddr = errors.New("failed to resolve to target address %v: %w")
-	ErrSocketConn    = errors.New("failed to create raw socket to listen for ICMP packets: %w")
-	ErrMarshalMsg    = errors.New("failed to marshal icmp message: %w")
-	ErrWrite         = errors.New("failed to send ICMP message: %w")
-	ErrRead          = errors.New("failed to read ICMP response message: %w")
-	ErrDeadline      = errors.New("failed to set read deadline: %w")
-	ErrParse         = errors.New("failed to parse ICMP message: %w")
-	ErrEchoReply     = errors.New("unexpected ICMP response: got type %v, expected echo reply")
-	ErrParseSubnet   = errors.New("failed to parse subnet %v: %w")
-	ErrMaskDecode    = errors.New("failed to decode mask %v: %w")
+	ErrResolveIPAddr = errors.New("failed to resolve to target address %v: %w\n")
+	ErrSocketConn    = errors.New("failed to create raw socket to listen for ICMP packets: %w\n")
+	ErrMarshalMsg    = errors.New("failed to marshal icmp message: %w\n")
+	ErrWrite         = errors.New("failed to send ICMP message: %w\n")
+	ErrRead          = errors.New("failed to read ICMP response message: %w\n")
+	ErrDeadline      = errors.New("failed to set read deadline: %w\n")
+	ErrParse         = errors.New("failed to parse ICMP message: %w\n")
+	ErrParseSubnet   = errors.New("failed to parse subnet %v: %w\n")
+	ErrMaskDecode    = errors.New("failed to decode mask %v: %w\n")
 )
 
 func NewWorkerPool(numOfWorkers int, jobQueue int, pingLogger *logger.Logger) *WorkerPool {
@@ -65,9 +67,9 @@ func NewWorkerPool(numOfWorkers int, jobQueue int, pingLogger *logger.Logger) *W
 		fmt.Printf(ErrSocketConn.Error(), err)
 	}
 	return &WorkerPool{
-		workers:     numOfWorkers,
-		jobQueue:    make(chan *Job, jobQueue),
-		Results:     make(chan *Result, jobQueue),
+		Workers:     numOfWorkers,
+		JobQueue:    make(chan *Job, jobQueue),
+		Results:     make(chan *PingResult, jobQueue),
 		wg:          wg,
 		logger:      pingLogger,
 		conn:        conn,
@@ -76,21 +78,14 @@ func NewWorkerPool(numOfWorkers int, jobQueue int, pingLogger *logger.Logger) *W
 	}
 }
 
-func (wp *WorkerPool) cleanup(replyCh chan *Result, echoID int) {
-	close(replyCh)
-	wp.mu.Lock()
-	delete(wp.PendingJobs, echoID)
-	wp.mu.Unlock()
-}
-
-func (wp *WorkerPool) worker(id int) {
+func (wp *WorkerPool) Worker(id int) {
 	defer wp.wg.Done()
-	for job := range wp.jobQueue {
-		replyCh := make(chan *Result, 1)
+	for job := range wp.JobQueue {
+		resultCh := make(chan *PingResult, 1)
 		echoID := generateEchoID(job.Target, id)
 
 		job.ID = echoID
-		job.Result = replyCh
+		job.Result = resultCh
 		job.SentAt = time.Now()
 
 		wp.mu.Lock()
@@ -99,96 +94,108 @@ func (wp *WorkerPool) worker(id int) {
 
 		replyReceived := false
 
-		for i := 0; i < job.MaxRetries && !replyReceived; i++ {
+		attempts := 1
+		seq := 0
+		for attempts <= job.MaxRetries && !replyReceived {
 			job.Attempts = job.Attempts + 1
-			fmt.Printf("Attempt: %d Worker %d pinging IP %v with echoID %v\n", job.Attempts, id, job.Target, echoID)
-			err := wp.SendPing(job.Target, echoID, i)
+			//fmt.Printf("Attempt: %d Worker %d pinging IP %v with echoID %v\n", job.Attempts, id, job.Target, echoID)
+			err := wp.SendPing(job.Target, echoID, seq)
 			if err != nil {
 				fmt.Println(err)
-				wp.cleanup(replyCh, echoID)
 			}
-		}
+			attempts++
+			seq++
 
-		select {
-		case reply := <-replyCh:
-			wp.Results <- reply
-			replyReceived = true
-		case <-time.After(2 * time.Second):
+			select {
+			case result := <-resultCh:
+				wp.Results <- result
+				replyReceived = true
+				time.Sleep(1 * time.Second)
+			case <-time.After(2 * time.Second):
+			}
+		} 
+		if replyReceived {
+			wp.cleanup(resultCh, echoID)
 		}
-		wp.cleanup(replyCh, echoID)
-
 	}
+}
 
+
+func (wp *WorkerPool) AddJob(job *Job) {
+	wp.JobQueue <- job
 }
 
 func (wp *WorkerPool) Start() {
 
-	for i := 1; i <= wp.workers; i++ {
+	for i := 1; i <= wp.Workers; i++ {
 		wp.wg.Add(1)
 		//time.Sleep(20 * time.Millisecond)
-		go wp.worker(i)
+		go wp.Worker(i)
 	}
-
-}
-
-func (wp *WorkerPool) AddJob(job *Job) {
-	wp.jobQueue <- job
 }
 
 func (wp *WorkerPool) Process() {
 
-	for {
-		parsedMessage, peer, err := wp.ReadReply()
-		if err != nil {
-			if isConnectionClosed(err) {
-				return
-			}
-			fmt.Println(err)
-		}
+	if wp.conn != nil {
 
-		if parsedMessage.Type == ipv4.ICMPTypeEchoReply {
-			body := parsedMessage.Body.(*icmp.Echo)
-
-			wp.mu.Lock()
-			job, _ := wp.PendingJobs[body.ID]
-			wp.mu.Unlock()
-
-			duration := time.Since(job.SentAt)
-
-			//fmt.Printf("checking type for reply for body ID %v\n", body.ID)
-
-			proto := parsedMessage.Type.Protocol()
-			echoReplyLog := fmt.Sprintf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
-			wp.logger.Log(echoReplyLog)
-
-			fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s\n", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
-
-			result := &Result{
-				IP:       peer.String(),
-				BodyID:   body.ID,
-				Duration: duration,
-			}
-
-			wp.mu.Lock()
-			if job, ok := wp.PendingJobs[result.BodyID]; ok {
-
-				if len(job.Result) == 0 {
-
-					job.Result <- result
+		for {
+			parsedMessage, peer, err := wp.ReadReply()
+			if err != nil {
+				if isConnectionClosed(err) {
+					return
 				}
-
+				fmt.Println(err)
 			}
-			wp.mu.Unlock()
 
+			if parsedMessage != nil {
+
+				if parsedMessage.Type == ipv4.ICMPTypeEchoReply {
+					body := parsedMessage.Body.(*icmp.Echo)
+
+					wp.mu.Lock()
+					job, ok := wp.PendingJobs[body.ID]
+					wp.mu.Unlock()
+
+					if ok {
+						duration := time.Since(job.SentAt)
+						//fmt.Printf("checking type for reply for body ID %v\n", body.ID)
+						proto := parsedMessage.Type.Protocol()
+						echoReplyLog := fmt.Sprintf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
+						wp.logger.Log(echoReplyLog)
+						fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s\n", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
+
+						result := &PingResult{
+							IP:         peer.String(),
+							BodyID:     body.ID,
+							Seq:        body.Seq,
+							Duration:   duration.String(),
+							Attempts:   job.Attempts,
+							ReceivedAt: time.Now(),
+						}
+							job.Result <- result
+					}
+					continue
+				}
+				continue
+			}
+			continue
 		}
 	}
 }
 
 func (wp *WorkerPool) Wait() {
 	defer wp.conn.Close()
-	close(wp.jobQueue)
+	close(wp.JobQueue)
 	wp.wg.Wait()
 	close(wp.Results)
+}
+
+
+func (wp *WorkerPool) cleanup(resultCh chan *PingResult, echoID int) {
+	close(resultCh)
+	wp.mu.Lock()
+	delete(wp.PendingJobs, echoID)
+	wp.mu.Unlock()
 }
 
 func isConnectionClosed(err error) bool {
@@ -303,7 +310,7 @@ func toByte(ipUint32 uint32) []byte {
 	return b
 }
 
-func generateEchoID(ip net.IP, workerId int) int {
-	return (os.Getpid() & 0xffff) ^ (workerId << 8) ^ (int(ipToUint32(ip)))&0xffff
+func generateEchoID(ip net.IP, WorkerId int) int {
+	return (os.Getpid() & 0xffff) ^ (WorkerId << 8) ^ (int(ipToUint32(ip)))&0xffff
 }
 
