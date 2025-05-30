@@ -16,13 +16,16 @@ import (
 )
 
 var pingLogger = logger.New("scan.log", "ping")
+var jobQueue int
+var portWP *scan.PortWorkerPool
+var defaultPorts int
 
 // scanCmd represents the scan command
 var scanCmd = &cobra.Command{
 	Use:   "scan",
 	Short: "Perform a one-time scan of a subnet",
 	Long: `The scan command performs a single pass over a specified subnet and returns the list of active devices. 
-It uses TCP handshakes to detect which hosts are online.
+It uses ICMP ping to detect which hosts are online and then a TCP handshake to determine open ports.
 
 Output can be displayed as formatted text or JSON.
 
@@ -46,7 +49,6 @@ Example:
 			fmt.Println(err)
 		}
 
-
 		wp := scan.NewWorkerPool(workers, len(hosts), pingLogger)
 
 		for _, host := range hosts {
@@ -69,15 +71,6 @@ Example:
 			Latency string   `json:"latency"`
 		}
 
-		filename := "scan.json"
-
-		f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			fmt.Println("Error: ", err)
-		}
-
-		defer f.Close()
-
 		var liveIPs []*scan.PingResult
 
 		for result := range wp.Results {
@@ -87,29 +80,20 @@ Example:
 		fmt.Printf("found %v hosts that are up\n", len(liveIPs))
 		fmt.Println("performing port scan...")
 
-		jobQueue := len(liveIPs) * len(ports)
-		portWP := scan.NewPortWorkerPool(workers, jobQueue)
+		if len(ports) > 0 {
+			jobQueue = len(liveIPs) * len(ports)
+			portWP = scan.NewPortWorkerPool(workers, jobQueue)
+		} else {
+			defaultPorts = 6000
+			jobQueue = len(liveIPs) * defaultPorts
+			portWP = scan.NewPortWorkerPool(workers, jobQueue)
+		}
+
 		switch {
 		case len(ports) > 0:
+			fmt.Printf("creating job queue with %v jobs", jobQueue)
 			for _, result := range liveIPs {
 				for _, port := range ports {
-					job := &scan.PortJob{
-						IP:      result.IP,
-						Port:    port,
-						Latency: result.Latency,
-					}
-					fmt.Printf("adding job %+v to queue\n", job)
-					portWP.AddJob(job)
-				}
-			}
-			portWP.Start()
-			portWP.Wait()
-		default:
-			fmt.Printf("using default port range 1-65535\n")
-			jobQueue = len(liveIPs) * 65535
-			for _, result := range liveIPs {
-				for i := 1; i < 65535; i++ {
-					port := strconv.FormatInt(int64(i), 10)
 					job := &scan.PortJob{
 						IP:      result.IP,
 						Port:    port,
@@ -121,7 +105,27 @@ Example:
 			}
 			portWP.Start()
 			portWP.Wait()
+		default:
+			fmt.Printf("using default port range 1-%v\n", defaultPorts)
+			fmt.Printf("creating job queue with %v jobs\n", jobQueue)
+			for _, result := range liveIPs {
+				for i := 1; i <= defaultPorts; i++ {
+					port := strconv.FormatInt(int64(i), 10)
+					job := &scan.PortJob{
+						IP:      result.IP,
+						Port:    port,
+						Latency: result.Latency,
+					}
+					//fmt.Printf("adding job %+v to queue\n", job)
+					portWP.AddJob(job)
+
+				}
+			}
+			portWP.Start()
+			portWP.Wait()
 		}
+
+		fmt.Printf("aggregating results...\n")
 
 		var jobResults []*scan.PortJob
 
@@ -135,15 +139,21 @@ Example:
 			data, exists := scanLog[job.IP]
 			if !exists {
 				data = Data{
-					Ports: []string{},
+					Ports:   []string{},
 					Latency: job.Latency,
 				}
 			}
-				data.Ports = append(data.Ports, job.Port)
-			  scanLog[job.IP] = data
+			data.Ports = append(data.Ports, job.Port)
+			scanLog[job.IP] = data
 		}
 
 		dataJSON, err := json.MarshalIndent(&scanLog, "", " ")
+		if err != nil {
+			fmt.Println("Error: ", err)
+		}
+
+		filename := "scan.json"
+		f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			fmt.Println("Error: ", err)
 		}
@@ -153,6 +163,7 @@ Example:
 			fmt.Println("Error: ", err)
 		}
 
+		f.Close()
 
 		duration := time.Since(start)
 		fmt.Printf("Scan complete! Duration: %s\n", duration)

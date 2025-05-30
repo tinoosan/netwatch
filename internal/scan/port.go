@@ -39,7 +39,7 @@ func (wp *PortWorkerPool) Worker(id int) {
 	for job := range wp.JobQueue {
 		addr := net.JoinHostPort(job.IP, job.Port)
 		//fmt.Printf("worker %v scanning port %v on host %v\n", id, job.Port, job.IP)
-		conn, err := net.DialTimeout("tcp", addr, time.Duration(1*time.Second))
+		conn, err := net.DialTimeout("tcp", addr, time.Duration(20*time.Millisecond))
 		if err == nil {
 			fmt.Println("Port", job.Port, "open on host", job.IP)
 			buffer := make([]byte, 1024)
@@ -52,12 +52,8 @@ func (wp *PortWorkerPool) Worker(id int) {
 			conn.Close()
 			wp.Results <- job
 		} else {
-			//fmt.Printf("worker %v finished scanning port %v on host %v but got error %v\n", id, job.Port, job.IP, err)
+			fmt.Printf("worker %v finished scanning port %v on host %v but got error %v\n", id, job.Port, job.IP, err)
 			continue
-		}
-
-		select {
-		case <-time.After(2 * time.Second):
 		}
 	}
 }
