@@ -84,6 +84,9 @@ Example:
 			liveIPs = append(liveIPs, result)
 		}
 
+		fmt.Printf("found %v hosts that are up\n", len(liveIPs))
+		fmt.Println("performing port scan...")
+
 		jobQueue := len(liveIPs) * len(ports)
 		portWP := scan.NewPortWorkerPool(workers, jobQueue)
 		switch {
@@ -93,8 +96,7 @@ Example:
 					job := &scan.PortJob{
 						IP:      result.IP,
 						Port:    port,
-						Latency: result.Duration,
-						Success: false,
+						Latency: result.Latency,
 					}
 					fmt.Printf("adding job %+v to queue\n", job)
 					portWP.AddJob(job)
@@ -103,6 +105,7 @@ Example:
 			portWP.Start()
 			portWP.Wait()
 		default:
+			fmt.Printf("using default port range 1-65535\n")
 			jobQueue = len(liveIPs) * 65535
 			for _, result := range liveIPs {
 				for i := 1; i < 65535; i++ {
@@ -110,10 +113,9 @@ Example:
 					job := &scan.PortJob{
 						IP:      result.IP,
 						Port:    port,
-						Latency: result.Duration,
-						Success: false,
+						Latency: result.Latency,
 					}
-					fmt.Printf("adding job %+v to queue\n", job)
+					//fmt.Printf("adding job %+v to queue\n", job)
 					portWP.AddJob(job)
 				}
 			}
@@ -124,7 +126,6 @@ Example:
 		var jobResults []*scan.PortJob
 
 		for result := range portWP.Results {
-			fmt.Printf("retreiving result %+v\n", result)
 			jobResults = append(jobResults, result)
 		}
 

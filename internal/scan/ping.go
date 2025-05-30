@@ -15,12 +15,9 @@ import (
 )
 
 type PingResult struct {
-	IP         string    `json:"ipAddress"`
-	BodyID     int       `json:"bodyID"`
-	Seq        int       `json:"sequenceNumber"`
-	Duration   string    `json:"duration"`
-	Attempts   int       `json:"attempts"`
-	ReceivedAt time.Time `json:"receivedAt"`
+	IP         string    
+	Latency   string    
+	ReceivedAt time.Time 
 }
 
 type Job struct {
@@ -113,13 +110,14 @@ func (wp *WorkerPool) Worker(id int) {
 				time.Sleep(1 * time.Second)
 			case <-time.After(2 * time.Second):
 			}
-		} 
+		}
 		if replyReceived {
-			wp.cleanup(resultCh, echoID)
+			wp.mu.Lock()
+			delete(wp.PendingJobs, echoID)
+			wp.mu.Unlock()
 		}
 	}
 }
-
 
 func (wp *WorkerPool) AddJob(job *Job) {
 	wp.JobQueue <- job
@@ -166,13 +164,10 @@ func (wp *WorkerPool) Process() {
 
 						result := &PingResult{
 							IP:         peer.String(),
-							BodyID:     body.ID,
-							Seq:        body.Seq,
-							Duration:   duration.String(),
-							Attempts:   job.Attempts,
+							Latency:   duration.String(),
 							ReceivedAt: time.Now(),
 						}
-							job.Result <- result
+						job.Result <- result
 					}
 					continue
 				}
@@ -188,14 +183,6 @@ func (wp *WorkerPool) Wait() {
 	close(wp.JobQueue)
 	wp.wg.Wait()
 	close(wp.Results)
-}
-
-
-func (wp *WorkerPool) cleanup(resultCh chan *PingResult, echoID int) {
-	close(resultCh)
-	wp.mu.Lock()
-	delete(wp.PendingJobs, echoID)
-	wp.mu.Unlock()
 }
 
 func isConnectionClosed(err error) bool {
@@ -313,4 +300,3 @@ func toByte(ipUint32 uint32) []byte {
 func generateEchoID(ip net.IP, WorkerId int) int {
 	return (os.Getpid() & 0xffff) ^ (WorkerId << 8) ^ (int(ipToUint32(ip)))&0xffff
 }
-

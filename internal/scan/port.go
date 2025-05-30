@@ -12,7 +12,6 @@ type PortJob struct {
 	Port    string
 	Latency string
 	Banner  string
-	Success bool
 }
 
 type PortWorkerPool struct {
@@ -43,7 +42,6 @@ func (wp *PortWorkerPool) Worker(id int) {
 		conn, err := net.DialTimeout("tcp", addr, time.Duration(1*time.Second))
 		if err == nil {
 			fmt.Println("Port", job.Port, "open on host", job.IP)
-			job.Success = true
 			buffer := make([]byte, 1024)
 			numBytesRead, err := conn.Read(buffer)
 			if err == nil {
