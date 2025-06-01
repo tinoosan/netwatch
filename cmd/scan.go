@@ -20,6 +20,12 @@ var jobQueue int
 var portWP *scan.PortWorkerPool
 var defaultPorts int
 
+func checkError(err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v", err)
+	}
+}
+
 // scanCmd represents the scan command
 var scanCmd = &cobra.Command{
 	Use:   "scan",
@@ -33,20 +39,22 @@ Example:
   netwatch scan --subnet 192.168.1.0/24 --output json`,
 	Run: func(cmd *cobra.Command, args []string) {
 
-		subnet, _ := cmd.Flags().GetString("subnet")
+		subnet, err := cmd.Flags().GetString("subnet")
+		checkError(err)
 		ports, err := cmd.Flags().GetStringSlice("port")
-		if err != nil {
-			fmt.Println("Error: ", err)
-		}
-		workers, _ := cmd.Flags().GetInt("workers")
+		checkError(err)
+		workers, err := cmd.Flags().GetInt("workers")
+		checkError(err)
 
 		start := time.Now()
 
 		//fmt.Printf("flags set: subnet %s | output %s\n", subnet, output)
 
 		hosts, err := scan.GenerateHosts(subnet)
-		if err != nil {
-			fmt.Println(err)
+    checkError(err)
+		if len(hosts) == 0 {
+			fmt.Printf("no hosts found in subnet %s", subnet)
+			return
 		}
 
 		wp := scan.NewWorkerPool(workers, len(hosts), pingLogger)
@@ -91,7 +99,7 @@ Example:
 
 		switch {
 		case len(ports) > 0:
-			fmt.Printf("creating job queue with %v jobs", jobQueue)
+			fmt.Printf("creating job queue with %v jobs\n", jobQueue)
 			for _, result := range liveIPs {
 				for _, port := range ports {
 					job := &scan.PortJob{
@@ -154,14 +162,10 @@ Example:
 
 		filename := "scan.json"
 		f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			fmt.Println("Error: ", err)
-		}
+    checkError(err)
 
 		_, err = f.WriteString(string(dataJSON))
-		if err != nil {
-			fmt.Println("Error: ", err)
-		}
+		checkError(err)
 
 		f.Close()
 
