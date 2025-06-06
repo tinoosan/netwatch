@@ -4,7 +4,7 @@ Copyright © 2025 NAME HERE <EMAIL ADDRESS>
 package cmd
 
 import (
-	"encoding/json"
+	//"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -14,11 +14,6 @@ import (
 	"github.com/tinoosan/netwatch/internal/logger"
 	"github.com/tinoosan/netwatch/internal/scan"
 )
-
-var pingLogger = logger.New("scan.log", "ping")
-var jobQueue int
-var portWP *scan.PortWorkerPool
-var defaultPorts int
 
 func checkError(err error) {
 	if err != nil {
@@ -39,6 +34,11 @@ Example:
   netwatch scan --subnet 192.168.1.0/24 --output json`,
 	Run: func(cmd *cobra.Command, args []string) {
 
+		var pingLogger = logger.New("scan.log", "ping")
+		var jobQueue int
+		var portWP *scan.PortWorkerPool
+		var defaultPorts int
+
 		subnet, err := cmd.Flags().GetString("subnet")
 		checkError(err)
 		ports, err := cmd.Flags().GetStringSlice("port")
@@ -56,127 +56,94 @@ Example:
 			return
 		}
 
-		wp := scan.NewWorkerPool(workers, len(hosts), pingLogger)
+		pingWorkerPool := scan.NewPingWorkerPool(workers, len(hosts), pingLogger)
 
-		for _, host := range hosts {
-			job := &scan.Job{
+		//fmt.Printf("hosts: %v\n", hosts)
+
+		for i, host := range hosts {
+			job := &scan.PingJob{
+				ID:         scan.GenerateEchoID(host.IP, i),
 				Target:     host,
+				ResultChan: make(chan *scan.PingResult, 1),
 				Attempts:   0,
 				MaxRetries: 2,
 			}
-			wp.AddJob(job)
+			pingWorkerPool.AddJob(job)
 		}
 
-		wp.Start()
-		go wp.Process()
-		wp.Wait()
-
+		pingWorkerPool.Start()
+		go pingWorkerPool.Process()
+		pingWorkerPool.Wait()
 		pingLogger.Close()
 
-		type Data struct {
-			Ports   []string `json:"openPorts"`
-			Latency string   `json:"latency"`
-		}
+		var liveTargets []*scan.TargetHost
 
-		var liveIPs []*scan.PingResult
+		for _, host := range hosts {
+			if host.ICMPErr != nil {
+				checkError(host.ICMPErr)
+			} 
 
-		for result := range wp.Results {
-			if result.Err != nil {
-				checkError(result.Err)
-			} else {
-				liveIPs = append(liveIPs, result)
+			if host.Up {
+				liveTargets = append(liveTargets, host)
 			}
 		}
 
-		if len(liveIPs) == 0 {
+		if len(liveTargets) == 0 {
 			fmt.Println("no hosts found")
 		} else {
-			fmt.Printf("found %v hosts that are up\n", len(liveIPs))
+			fmt.Printf("found %v hosts that are up\n", len(liveTargets))
 			fmt.Println("performing port scan...")
 
-		if len(ports) > 0 && len(liveIPs) != 0 {
-			jobQueue = len(liveIPs) * len(ports)
-			portWP = scan.NewPortWorkerPool(workers, jobQueue)
-		} else {
-			defaultPorts = 6000
-			jobQueue = len(liveIPs) * defaultPorts
-			portWP = scan.NewPortWorkerPool(workers, jobQueue)
-		}
+			if len(ports) > 0 && len(liveTargets) != 0 {
+				jobQueue = len(liveTargets) * len(ports)
+				portWP = scan.NewPortWorkerPool(workers, jobQueue)
+			} else {
+				defaultPorts = 6000
+				jobQueue = len(liveTargets) * defaultPorts
+				portWP = scan.NewPortWorkerPool(workers, jobQueue)
+			}
 
-		switch {
-		case len(ports) > 0:
-			fmt.Printf("creating job queue with %v jobs\n", jobQueue)
-			for _, result := range liveIPs {
-				for _, port := range ports {
-					job := scan.PortJob{
-						IP:      result.IP,
-						Port:    port,
-						Latency: result.Latency,
+			switch {
+			case len(ports) > 0:
+				fmt.Printf("creating job queue with %v jobs\n", jobQueue)
+				for _, target := range liveTargets {
+					for _, port := range ports {
+						job := scan.PortJob{
+							Target: target,
+							Port:   port,
+						}
+						//fmt.Printf("adding job %+v to queue\n", job)
+						portWP.AddJob(job)
 					}
-					//fmt.Printf("adding job %+v to queue\n", job)
-					portWP.AddJob(job)
 				}
-			}
-			portWP.Start()
-			portWP.Wait()
-		default:
-			fmt.Printf("using default port range 1-%v\n", defaultPorts)
-			fmt.Printf("creating job queue with %v jobs\n", jobQueue)
-			for _, result := range liveIPs {
-				for i := 1; i <= defaultPorts; i++ {
-					port := strconv.FormatInt(int64(i), 10)
-					job := scan.PortJob{
-						IP:      result.IP,
-						Port:    port,
-						Latency: result.Latency,
+				portWP.Start()
+				portWP.Wait()
+			default:
+				fmt.Printf("using default port range 1-%v\n", defaultPorts)
+				fmt.Printf("creating job queue with %v jobs\n", jobQueue)
+				for _, target := range liveTargets {
+					for i := 1; i <= defaultPorts; i++ {
+						port := strconv.FormatInt(int64(i), 10)
+						job := scan.PortJob{
+							Target: target,
+							Port:   port,
+						}
+						//fmt.Printf("adding job %+v to queue\n", job)
+						portWP.AddJob(job)
+
 					}
-					//fmt.Printf("adding job %+v to queue\n", job)
-					portWP.AddJob(job)
-
 				}
+				portWP.Start()
+				portWP.Wait()
 			}
-			portWP.Start()
-			portWP.Wait()
-		}
 
-		fmt.Printf("aggregating results...\n")
-
-		var jobResults []scan.PortJob
-
-		for result := range portWP.Results {
-			jobResults = append(jobResults, result)
-		}
-
-		scanLog := make(map[string]Data)
-
-		for _, job := range jobResults {
-			data, exists := scanLog[job.IP]
-			if !exists {
-				data = Data{
-					Ports:   []string{},
-					Latency: job.Latency,
-				}
+			for _, target := range liveTargets {
+			fmt.Printf("%+v\n", target)
 			}
-			data.Ports = append(data.Ports, job.Port)
-			scanLog[job.IP] = data
-		}
 
-		dataJSON, err := json.MarshalIndent(&scanLog, "", " ")
-		if err != nil {
-			fmt.Println("Error: ", err)
-		}
 
-		filename := "scan.json"
-		f, err1 := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		checkError(err1)
-
-		_, err2 := f.WriteString(string(dataJSON))
-		checkError(err2)
-
-		f.Close()
-
-		duration := time.Since(start)
-		fmt.Printf("Scan complete! Duration: %s\n", duration)
+			duration := time.Since(start)
+			fmt.Printf("Scan complete! Duration: %s\n", duration)
 		}
 	},
 }

@@ -8,10 +8,14 @@ import (
 )
 
 type PortJob struct {
-	IP      string
+	Target *TargetHost
 	Port    string
-	Latency string
-	Banner  string
+}
+
+type PortScanResult struct {
+	Port string
+	Open bool
+	Err error
 }
 
 type PortWorkerPool struct {
@@ -25,7 +29,6 @@ func NewPortWorkerPool(numOfWorkers int, jobQueue int) *PortWorkerPool {
 	return &PortWorkerPool{
 		Workers:  numOfWorkers,
 		JobQueue: make(chan PortJob, jobQueue),
-		Results:  make(chan PortJob, jobQueue),
 		wg:       &sync.WaitGroup{},
 	}
 }
@@ -37,22 +40,21 @@ func (wp *PortWorkerPool) AddJob(job PortJob) {
 func (wp *PortWorkerPool) Worker(id int) {
 	defer wp.wg.Done()
 	for job := range wp.JobQueue {
-		addr := net.JoinHostPort(job.IP, job.Port)
+		addr := net.JoinHostPort(job.Target.IP.String(), job.Port)
 		//fmt.Printf("worker %v scanning port %v on host %v\n", id, job.Port, job.IP)
 		conn, err := net.DialTimeout("tcp", addr, time.Duration(20*time.Millisecond))
 		if err == nil {
-			fmt.Println("Port", job.Port, "open on host", job.IP)
-			buffer := make([]byte, 1024)
-			numBytesRead, err := conn.Read(buffer)
-			if err == nil {
-				banner := fmt.Sprintf("%s\n", buffer[0:numBytesRead])
-				job.Banner = banner
-			}
+			fmt.Println("Port", job.Port, "open on host", job.Target.IP.String())
 			//fmt.Printf("worker %v finished scanning port %v on host %v\n", id, job.Port, job.IP)
 			conn.Close()
-			wp.Results <- job
+			result := PortScanResult{
+				Port: job.Port,
+				Open: true,
+				Err: nil,
+			}
+			job.Target.OpenPorts = append(job.Target.OpenPorts, result)
 		} else {
-			fmt.Printf("worker %v finished scanning port %v on host %v but got error %v\n", id, job.Port, job.IP, err)
+			//fmt.Printf("worker %v finished scanning port %v on host %v but got error %v\n", id, job.Port, job.Target.IP.String(), err)
 			continue
 		}
 	}
@@ -68,5 +70,4 @@ func (wp *PortWorkerPool) Start() {
 func (wp *PortWorkerPool) Wait() {
 	close(wp.JobQueue)
 	wp.wg.Wait()
-	close(wp.Results)
 }

@@ -14,31 +14,36 @@ import (
 	"golang.org/x/net/ipv4"
 )
 
-type PingResult struct {
-	IP         string
-	Latency    string
-	ReceivedAt time.Time
-	Err        error
+//Target host holds all info for entire lifecyle so needs to persist throughout
+
+type TargetHost struct {
+	IP        net.IP
+	Up        bool
+	OpenPorts []PortScanResult
+	ICMPErr       error
 }
 
-type Job struct {
+type PingJob struct {
 	ID         int
-	Target     net.IP
-	Result     chan *PingResult
+	Target     *TargetHost
+	ResultChan chan *PingResult
 	SentAt     time.Time
 	Attempts   int
 	MaxRetries int
 }
 
-type WorkerPool struct {
-	Workers     int
-	JobQueue    chan *Job
-	Results     chan *PingResult
-	PendingJobs map[int]*Job
-	wg          *sync.WaitGroup
-	logger      *logger.Logger
-	conn        *icmp.PacketConn
-	mu          *sync.Mutex
+type PingResult struct {
+	Err     error
+}
+
+type PingWorkerPool struct {
+	Workers  int
+	JobQueue chan *PingJob
+	Jobs     map[int]*PingJob
+	wg       *sync.WaitGroup
+	logger   *logger.Logger
+	conn     *icmp.PacketConn
+	mu       *sync.Mutex
 }
 
 const (
@@ -56,78 +61,71 @@ var (
 	ErrParse         = errors.New("failed to parse ICMP message: %w\n")
 	ErrParseSubnet   = errors.New("failed to parse subnet %v: %w\n")
 	ErrMaskDecode    = errors.New("failed to decode mask %v: %w\n")
+	ErrPingTimeout   = errors.New("ping time out for host %v\n")
 )
 
-func NewWorkerPool(numOfWorkers int, jobQueue int, pingLogger *logger.Logger) *WorkerPool {
+func NewPingWorkerPool(numOfWorkers int, jobQueue int, pingLogger *logger.Logger) *PingWorkerPool {
 	wg := &sync.WaitGroup{}
 	conn, err := icmp.ListenPacket("ip4:icmp", ListenAddress)
 	if err != nil {
 		fmt.Printf(ErrSocketConn.Error(), err)
 	}
-	return &WorkerPool{
-		Workers:     numOfWorkers,
-		JobQueue:    make(chan *Job, jobQueue),
-		Results:     make(chan *PingResult, jobQueue),
-		wg:          wg,
-		logger:      pingLogger,
-		conn:        conn,
-		PendingJobs: make(map[int]*Job),
-		mu:          &sync.Mutex{},
+	return &PingWorkerPool{
+		Workers:  numOfWorkers,
+		JobQueue: make(chan *PingJob, jobQueue),
+		wg:       wg,
+		logger:   pingLogger,
+		conn:     conn,
+		Jobs:     make(map[int]*PingJob),
+		mu:       &sync.Mutex{},
 	}
 }
 
-func (wp *WorkerPool) Worker(id int) {
+func (wp *PingWorkerPool) Worker(id int) {
 	defer wp.wg.Done()
 	for job := range wp.JobQueue {
-		resultCh := make(chan *PingResult, 1)
-		echoID := generateEchoID(job.Target, id)
-
-		job.ID = echoID
-		job.Result = resultCh
-		job.SentAt = time.Now()
-
-		wp.mu.Lock()
-		wp.PendingJobs[echoID] = job
-		wp.mu.Unlock()
-
 		replyReceived := false
-
 		attempts := 1
 		seq := 0
-		for attempts <= job.MaxRetries && !replyReceived {
+		for attempts <= job.MaxRetries && (!replyReceived) {
 			job.Attempts = job.Attempts + 1
 			//fmt.Printf("Attempt: %d Worker %d pinging IP %v with echoID %v\n", job.Attempts, id, job.Target, echoID)
-			err := wp.SendPing(job.Target, echoID, seq)
+			err := wp.SendPing(job, seq)
 			if err != nil {
 				result := &PingResult{
 					Err: err,
 				}
-				resultCh <- result
+				job.ResultChan <- result
 			}
 			attempts++
 			seq++
 
 			select {
-			case result := <-resultCh:
-				wp.Results <- result
+			case result := <-job.ResultChan:
+				job.Target.Up = true
+				job.Target.ICMPErr = result.Err
 				replyReceived = true
-				time.Sleep(1 * time.Second)
 			case <-time.After(2 * time.Second):
 			}
 		}
+
 		if replyReceived {
 			wp.mu.Lock()
-			delete(wp.PendingJobs, echoID)
+			delete(wp.Jobs, job.ID)
 			wp.mu.Unlock()
+		} else {
+			job.Target.Up = false
+			job.Target.ICMPErr = fmt.Errorf(ErrPingTimeout.Error(), job.Target.IP)
 		}
 	}
 }
 
-func (wp *WorkerPool) AddJob(job *Job) {
+func (wp *PingWorkerPool) AddJob(job *PingJob) {
 	wp.JobQueue <- job
+	wp.Jobs[job.ID] = job
 }
 
-func (wp *WorkerPool) Start() {
+func (wp *PingWorkerPool) Start() {
 
 	for i := 1; i <= wp.Workers; i++ {
 		wp.wg.Add(1)
@@ -136,21 +134,14 @@ func (wp *WorkerPool) Start() {
 	}
 }
 
-func (wp *WorkerPool) Process() {
-
+func (wp *PingWorkerPool) Process() {
 	if wp.conn != nil {
-
-		for {
+		for len(wp.JobQueue) > 0{
 			parsedMessage, peer, err := wp.ReadReply()
 			if err != nil {
 				if isConnectionClosed(err) {
 					return
 				}
-				result := &PingResult{
-					IP: peer.String(),
-					Err: err,
-				}
-				wp.Results <- result
 			}
 
 			if parsedMessage != nil {
@@ -158,7 +149,7 @@ func (wp *WorkerPool) Process() {
 					body := parsedMessage.Body.(*icmp.Echo)
 
 					wp.mu.Lock()
-					job, ok := wp.PendingJobs[body.ID]
+					job, ok := wp.Jobs[body.ID]
 					wp.mu.Unlock()
 
 					if ok {
@@ -170,12 +161,9 @@ func (wp *WorkerPool) Process() {
 						fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s\n", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
 
 						result := &PingResult{
-							IP:         peer.String(),
-							Latency:    duration.String(),
-							ReceivedAt: time.Now(),
-							Err: nil,
+							Err:     nil,
 						}
-						job.Result <- result
+						job.ResultChan <- result
 					}
 					continue
 				}
@@ -186,11 +174,10 @@ func (wp *WorkerPool) Process() {
 	}
 }
 
-func (wp *WorkerPool) Wait() {
+func (wp *PingWorkerPool) Wait() {
 	defer wp.conn.Close()
 	close(wp.JobQueue)
 	wp.wg.Wait()
-	close(wp.Results)
 }
 
 func isConnectionClosed(err error) bool {
@@ -200,12 +187,7 @@ func isConnectionClosed(err error) bool {
 	return false
 }
 
-// GenerateHosts takes a CIDR subnet string (e.g. "192.168.0.0/24")
-// and returns a slice of all usable host IPs within that subnet.
-//
-// The function excludes the network address (first IP) and broadcast address (last IP).
-// It supports IPv4 only and returns an error for invalid CIDR input.
-func GenerateHosts(subnet string) ([]net.IP, error) {
+func GenerateHosts(subnet string) ([]*TargetHost, error) {
 	ipList := make([]net.IP, 0)
 	_, network, err := net.ParseCIDR(subnet)
 	if err != nil {
@@ -223,31 +205,38 @@ func GenerateHosts(subnet string) ([]net.IP, error) {
 		ipList = append(ipList, net.IP(ip))
 	}
 	//fmt.Println(ipList)
-	return ipList, nil
+	var targetHosts []*TargetHost
+	for _, ip := range ipList {
+		targetHost := &TargetHost{IP: ip}
+		targetHosts = append(targetHosts, targetHost)
+	}
+	return targetHosts, nil
 }
 
-func (wp *WorkerPool) SendPing(host net.IP, echoID int, seq int) error {
+func (wp *PingWorkerPool) SendPing(job *PingJob, seq int) error {
 
 	msg := icmp.Message{
 		Type: ipv4.ICMPTypeEcho,
 		Body: &icmp.Echo{
-			ID:   echoID,
+			ID:   job.ID,
 			Seq:  seq,
 			Data: []byte(""),
 		},
 	}
 
-	dst, err := net.ResolveIPAddr("ip4", host.String())
+	dst, err := net.ResolveIPAddr("ip4", job.Target.IP.String())
 	if err != nil {
-		errMsg := fmt.Sprintf(ErrResolveIPAddr.Error(), host.String(), err)
+		errMsg := fmt.Sprintf(ErrResolveIPAddr.Error(), job.Target.IP.String(), err)
 		wp.logger.Log(errMsg)
-		return fmt.Errorf(ErrResolveIPAddr.Error(), host.String(), err)
+		return fmt.Errorf(ErrResolveIPAddr.Error(), job.Target.IP.String(), err)
 	}
 
 	bmessage, err := msg.Marshal(nil)
 	if err != nil {
 		return fmt.Errorf(ErrMarshalMsg.Error(), err)
 	}
+
+	job.SentAt = time.Now()
 
 	_, err = wp.conn.WriteTo(bmessage, dst)
 	if err != nil {
@@ -257,7 +246,7 @@ func (wp *WorkerPool) SendPing(host net.IP, echoID int, seq int) error {
 	return nil
 }
 
-func (wp *WorkerPool) ReadReply() (*icmp.Message, net.Addr, error) {
+func (wp *PingWorkerPool) ReadReply() (*icmp.Message, net.Addr, error) {
 	var peer net.Addr
 	err := wp.conn.SetReadDeadline(time.Now().Add(11 * time.Second))
 	if err != nil {
@@ -305,6 +294,6 @@ func toByte(ipUint32 uint32) []byte {
 	return b
 }
 
-func generateEchoID(ip net.IP, WorkerId int) int {
+func GenerateEchoID(ip net.IP, WorkerId int) int {
 	return (os.Getpid() & 0xffff) ^ (WorkerId << 8) ^ (int(ipToUint32(ip)))&0xffff
 }
