@@ -49,11 +49,10 @@ Example:
 		start := time.Now()
 
 		//fmt.Printf("flags set: subnet %s | output %s\n", subnet, output)
-
 		hosts, err := scan.GenerateHosts(subnet)
-    checkError(err)
+		checkError(err)
 		if len(hosts) == 0 {
-			fmt.Printf("no hosts found in subnet %s", subnet)
+			fmt.Printf("no hosts found in subnet %s\n", subnet)
 			return
 		}
 
@@ -82,13 +81,20 @@ Example:
 		var liveIPs []*scan.PingResult
 
 		for result := range wp.Results {
-			liveIPs = append(liveIPs, result)
+			if result.Err != nil {
+				checkError(result.Err)
+			} else {
+				liveIPs = append(liveIPs, result)
+			}
 		}
 
-		fmt.Printf("found %v hosts that are up\n", len(liveIPs))
-		fmt.Println("performing port scan...")
+		if len(liveIPs) == 0 {
+			fmt.Println("no hosts found")
+		} else {
+			fmt.Printf("found %v hosts that are up\n", len(liveIPs))
+			fmt.Println("performing port scan...")
 
-		if len(ports) > 0 {
+		if len(ports) > 0 && len(liveIPs) != 0 {
 			jobQueue = len(liveIPs) * len(ports)
 			portWP = scan.NewPortWorkerPool(workers, jobQueue)
 		} else {
@@ -102,7 +108,7 @@ Example:
 			fmt.Printf("creating job queue with %v jobs\n", jobQueue)
 			for _, result := range liveIPs {
 				for _, port := range ports {
-					job := &scan.PortJob{
+					job := scan.PortJob{
 						IP:      result.IP,
 						Port:    port,
 						Latency: result.Latency,
@@ -119,7 +125,7 @@ Example:
 			for _, result := range liveIPs {
 				for i := 1; i <= defaultPorts; i++ {
 					port := strconv.FormatInt(int64(i), 10)
-					job := &scan.PortJob{
+					job := scan.PortJob{
 						IP:      result.IP,
 						Port:    port,
 						Latency: result.Latency,
@@ -135,7 +141,7 @@ Example:
 
 		fmt.Printf("aggregating results...\n")
 
-		var jobResults []*scan.PortJob
+		var jobResults []scan.PortJob
 
 		for result := range portWP.Results {
 			jobResults = append(jobResults, result)
@@ -161,17 +167,17 @@ Example:
 		}
 
 		filename := "scan.json"
-		f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-    checkError(err)
+		f, err1 := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		checkError(err1)
 
-		_, err = f.WriteString(string(dataJSON))
-		checkError(err)
+		_, err2 := f.WriteString(string(dataJSON))
+		checkError(err2)
 
 		f.Close()
 
 		duration := time.Since(start)
 		fmt.Printf("Scan complete! Duration: %s\n", duration)
-
+		}
 	},
 }
 

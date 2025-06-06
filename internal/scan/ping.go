@@ -15,9 +15,10 @@ import (
 )
 
 type PingResult struct {
-	IP         string    
-	Latency   string    
-	ReceivedAt time.Time 
+	IP         string
+	Latency    string
+	ReceivedAt time.Time
+	Err        error
 }
 
 type Job struct {
@@ -98,7 +99,10 @@ func (wp *WorkerPool) Worker(id int) {
 			//fmt.Printf("Attempt: %d Worker %d pinging IP %v with echoID %v\n", job.Attempts, id, job.Target, echoID)
 			err := wp.SendPing(job.Target, echoID, seq)
 			if err != nil {
-				fmt.Println(err)
+				result := &PingResult{
+					Err: err,
+				}
+				resultCh <- result
 			}
 			attempts++
 			seq++
@@ -142,11 +146,14 @@ func (wp *WorkerPool) Process() {
 				if isConnectionClosed(err) {
 					return
 				}
-				fmt.Println(err)
+				result := &PingResult{
+					IP: peer.String(),
+					Err: err,
+				}
+				wp.Results <- result
 			}
 
 			if parsedMessage != nil {
-
 				if parsedMessage.Type == ipv4.ICMPTypeEchoReply {
 					body := parsedMessage.Body.(*icmp.Echo)
 
@@ -164,8 +171,9 @@ func (wp *WorkerPool) Process() {
 
 						result := &PingResult{
 							IP:         peer.String(),
-							Latency:   duration.String(),
+							Latency:    duration.String(),
 							ReceivedAt: time.Now(),
+							Err: nil,
 						}
 						job.Result <- result
 					}

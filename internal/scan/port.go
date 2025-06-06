@@ -16,21 +16,21 @@ type PortJob struct {
 
 type PortWorkerPool struct {
 	Workers  int
-	JobQueue chan *PortJob
-	Results  chan *PortJob
+	JobQueue chan PortJob
+	Results  chan PortJob
 	wg       *sync.WaitGroup
 }
 
 func NewPortWorkerPool(numOfWorkers int, jobQueue int) *PortWorkerPool {
 	return &PortWorkerPool{
 		Workers:  numOfWorkers,
-		JobQueue: make(chan *PortJob, jobQueue),
-		Results:  make(chan *PortJob, jobQueue),
+		JobQueue: make(chan PortJob, jobQueue),
+		Results:  make(chan PortJob, jobQueue),
 		wg:       &sync.WaitGroup{},
 	}
 }
 
-func (wp *PortWorkerPool) AddJob(job *PortJob) {
+func (wp *PortWorkerPool) AddJob(job PortJob) {
 	wp.JobQueue <- job
 }
 
