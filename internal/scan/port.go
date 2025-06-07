@@ -1,3 +1,6 @@
+// Package scan contains the low level ICMP and TCP scanning primitives used by
+// Netwatch. It provides worker pools for performing network operations in
+// parallel and data structures for storing scan results.
 package scan
 
 import (
@@ -10,17 +13,21 @@ import (
 	"github.com/tinoosan/netwatch/internal/logger"
 )
 
+// PortJob represents a single TCP port scan on a host.
 type PortJob struct {
 	Target *TargetHost
 	Port   string
 }
 
+// PortScanResult captures the outcome of a TCP port scan.
 type PortScanResult struct {
 	Port string
 	Open bool
 	Err  error
 }
 
+// PortWorkerPool manages a pool of goroutines that perform TCP connection
+// attempts based on enqueued PortJobs.
 type PortWorkerPool struct {
 	Workers  int
 	JobQueue chan PortJob
@@ -30,6 +37,8 @@ type PortWorkerPool struct {
 	mu       *sync.Mutex
 }
 
+// NewPortWorkerPool creates a pool that performs TCP port scans. The jobQueue
+// argument determines how many pending PortJobs can be queued.
 func NewPortWorkerPool(numOfWorkers int, jobQueue int, logger *logger.Logger, ctx context.Context) *PortWorkerPool {
 	return &PortWorkerPool{
 		Workers:  numOfWorkers,
@@ -41,10 +50,13 @@ func NewPortWorkerPool(numOfWorkers int, jobQueue int, logger *logger.Logger, ct
 	}
 }
 
+// AddJob enqueues a PortJob for processing.
 func (wp *PortWorkerPool) AddJob(job PortJob) {
 	wp.JobQueue <- job
 }
 
+// Worker consumes PortJobs from the queue and attempts a TCP connection to the
+// specified port.
 func (wp *PortWorkerPool) Worker(id int) {
 	defer wp.wg.Done()
 	for job := range wp.JobQueue {
@@ -85,6 +97,7 @@ func (wp *PortWorkerPool) Worker(id int) {
 	}
 }
 
+// Start launches the worker goroutines for the pool.
 func (wp *PortWorkerPool) Start() {
 	for i := 1; i <= wp.Workers; i++ {
 		wp.wg.Add(1)
@@ -92,6 +105,7 @@ func (wp *PortWorkerPool) Start() {
 	}
 }
 
+// Wait blocks until all queued jobs are processed.
 func (wp *PortWorkerPool) Wait() {
 	close(wp.JobQueue)
 	wp.wg.Wait()
