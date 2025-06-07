@@ -15,6 +15,7 @@ package cmd
 
 import (
 	//"encoding/json"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -58,7 +59,13 @@ Example:
 		checkError(err)
 
 		start := time.Now()
-    
+
+		type Data struct {
+			Result map[string]*scan.TargetHost
+		}
+
+		data := &Data{Result: make(map[string]*scan.TargetHost)}
+
 		//Step 1: Generate hosts from subnet CIDR
 		fmt.Println("generating hosts for subnet", subnet)
 		hosts, err := scan.GenerateHosts(subnet)
@@ -74,9 +81,9 @@ Example:
 		pingWorkerPool := scan.NewPingWorkerPool(workers, len(hosts), logger)
 
 		//fmt.Printf("hosts: %v\n", hosts)
-    
+
 		//Step 2: Use hosts to create jobs for workers and add them to worker pool for ping job.
-		//This will allow each worker to mutate the host with the result of the job reducing the need for 
+		//This will allow each worker to mutate the host with the result of the job reducing the need for
 		// a result channel
 		for i, host := range hosts {
 			job := &scan.PingJob{
@@ -89,13 +96,12 @@ Example:
 			pingWorkerPool.AddJob(job)
 		}
 
-
 		//Step 3: Start the job
 		pingWorkerPool.Start()
 		go pingWorkerPool.Process()
 		pingWorkerPool.Wait()
 
-  //Step 4: Collect the live hosts.
+		//Step 4: Collect the live hosts.
 		for _, host := range hosts {
 			if host.ICMPErr != nil {
 				logger.Log(host.ICMPErr.Error())
@@ -110,7 +116,7 @@ Example:
 			fmt.Println("no hosts found")
 		} else {
 			fmt.Printf("found %v hosts that are up\n", len(liveTargets))
-	//Step 5: Start the port scan by creating the jobs and then starting the worker pool.
+			//Step 5: Start the port scan by creating the jobs and then starting the worker pool.
 			fmt.Println("performing port scan...")
 
 			if len(ports) > 0 && len(liveTargets) != 0 {
@@ -158,11 +164,26 @@ Example:
 			}
 
 			for _, target := range liveTargets {
-				fmt.Printf("%+v\n", target)
+				data.Result[target.IP.String()] = target
 			}
 
 			duration := time.Since(start)
 			fmt.Printf("Scan complete! Duration: %s\n", duration)
+		}
+
+		f, err := os.OpenFile("scan.json", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		dataJSON, err := json.MarshalIndent(data, " ", "  ")
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		_, err = f.Write(dataJSON)
+		if err != nil {
+			fmt.Println(err)
 		}
 	},
 }

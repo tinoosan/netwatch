@@ -14,7 +14,6 @@ import (
 	"golang.org/x/net/ipv4"
 )
 
-//Target host holds all info for entire lifecyle so needs to persist throughout
 
 type TargetHost struct {
 	IP        net.IP
