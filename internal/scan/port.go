@@ -1,6 +1,7 @@
 package scan
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"sync"
@@ -23,16 +24,18 @@ type PortScanResult struct {
 type PortWorkerPool struct {
 	Workers  int
 	JobQueue chan PortJob
+	context  context.Context
 	logger   *logger.Logger
 	wg       *sync.WaitGroup
 	mu       *sync.Mutex
 }
 
-func NewPortWorkerPool(numOfWorkers int, jobQueue int, logger *logger.Logger) *PortWorkerPool {
+func NewPortWorkerPool(numOfWorkers int, jobQueue int, logger *logger.Logger, ctx context.Context) *PortWorkerPool {
 	return &PortWorkerPool{
 		Workers:  numOfWorkers,
 		JobQueue: make(chan PortJob, jobQueue),
-		logger: logger,
+		context:  ctx,
+		logger:   logger,
 		wg:       &sync.WaitGroup{},
 		mu:       &sync.Mutex{},
 	}
@@ -46,32 +49,39 @@ func (wp *PortWorkerPool) Worker(id int) {
 	defer wp.wg.Done()
 	for job := range wp.JobQueue {
 
-		wp.mu.Lock()
-		hostIP := job.Target.IP.String()
-		wp.mu.Unlock()
+		select {
+		case <-wp.context.Done():
+			return
+		default:
+			wp.mu.Lock()
+			hostIP := job.Target.IP.String()
+			wp.mu.Unlock()
 
-		port := job.Port
-		addr := net.JoinHostPort(hostIP, port)
-	  message := fmt.Sprintf("scanning port %v on host %v\n", job.Port, hostIP)
-		wp.logger.Log(message)
-		conn, err := net.DialTimeout("tcp", addr, time.Duration(20*time.Millisecond))
-		if err == nil {
-			message2 := fmt.Sprint("Port", port, "open on host\n", hostIP)
-		wp.logger.Log(message2)
-			conn.Close()
-			result := PortScanResult{
-				Port: port,
-				Open: true,
-				Err:  nil,
+			port := job.Port
+			addr := net.JoinHostPort(hostIP, port)
+			//message := fmt.Sprintf("scanning port %v on host %v\n", job.Port, hostIP)
+			//wp.logger.Log(message)
+			conn, err := net.DialTimeout("tcp", addr, time.Duration(20*time.Millisecond))
+			if err == nil {
+				message2 := fmt.Sprint("Port", port, "open on host\n", hostIP)
+				wp.logger.Log(message2)
+				conn.Close()
+				result := PortScanResult{
+					Port: port,
+					Open: true,
+					Err:  nil,
+				}
+
+				wp.mu.Lock()
+				job.Target.OpenPorts = append(job.Target.OpenPorts, result)
+				wp.mu.Unlock()
+			} else {
+				//fmt.Printf("finished scanning port %v on host %v but got error %v\n", id, job.Port, job.Target.IP.String(), err)
+				continue
 			}
 
-			wp.mu.Lock()
-			job.Target.OpenPorts = append(job.Target.OpenPorts, result)
-			wp.mu.Unlock()
-		} else {
-			//fmt.Printf("finished scanning port %v on host %v but got error %v\n", id, job.Port, job.Target.IP.String(), err)
-			continue
 		}
+
 	}
 }
 

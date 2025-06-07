@@ -1,6 +1,7 @@
 package scan
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -14,12 +15,11 @@ import (
 	"golang.org/x/net/ipv4"
 )
 
-
 type TargetHost struct {
 	IP        net.IP
 	Up        bool
 	OpenPorts []PortScanResult
-	ICMPErr       error
+	ICMPErr   error
 }
 
 type PingJob struct {
@@ -32,13 +32,14 @@ type PingJob struct {
 }
 
 type PingResult struct {
-	Err     error
+	Err error
 }
 
 type PingWorkerPool struct {
 	Workers  int
 	JobQueue chan *PingJob
 	Jobs     map[int]*PingJob
+	context  context.Context
 	wg       *sync.WaitGroup
 	logger   *logger.Logger
 	conn     *icmp.PacketConn
@@ -63,7 +64,7 @@ var (
 	ErrPingTimeout   = errors.New("ping time out for host %v\n")
 )
 
-func NewPingWorkerPool(numOfWorkers int, jobQueue int, logger *logger.Logger) *PingWorkerPool {
+func NewPingWorkerPool(numOfWorkers int, jobQueue int, logger *logger.Logger, ctx context.Context) *PingWorkerPool {
 	wg := &sync.WaitGroup{}
 	conn, err := icmp.ListenPacket("ip4:icmp", ListenAddress)
 	if err != nil {
@@ -73,6 +74,7 @@ func NewPingWorkerPool(numOfWorkers int, jobQueue int, logger *logger.Logger) *P
 	return &PingWorkerPool{
 		Workers:  numOfWorkers,
 		JobQueue: make(chan *PingJob, jobQueue),
+		context:  ctx,
 		wg:       wg,
 		logger:   logger,
 		conn:     conn,
@@ -105,6 +107,8 @@ func (wp *PingWorkerPool) Worker(id int) {
 				job.Target.Up = true
 				job.Target.ICMPErr = result.Err
 				replyReceived = true
+			case <-wp.context.Done():
+				return
 			case <-time.After(2 * time.Second):
 			}
 		}
@@ -137,7 +141,13 @@ func (wp *PingWorkerPool) Start() {
 func (wp *PingWorkerPool) Process() {
 	if wp.conn != nil {
 		for {
+			select {
+			case <-wp.context.Done():
+				fmt.Println("cancelling scan..")
+			return 
+			default:
 			parsedMessage, peer, err := wp.ReadReply()
+
 			if err != nil {
 				if isConnectionClosed(err) {
 					return
@@ -161,7 +171,7 @@ func (wp *PingWorkerPool) Process() {
 						fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s\n", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
 
 						result := &PingResult{
-							Err:     nil,
+							Err: nil,
 						}
 						job.ResultChan <- result
 					}
@@ -172,6 +182,8 @@ func (wp *PingWorkerPool) Process() {
 			continue
 		}
 	}
+
+			}
 }
 
 func (wp *PingWorkerPool) Wait() {

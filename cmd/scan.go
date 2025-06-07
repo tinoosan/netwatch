@@ -15,9 +15,11 @@ package cmd
 
 import (
 	//"encoding/json"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
 	"time"
 
@@ -46,6 +48,7 @@ Example:
 	Run: func(cmd *cobra.Command, args []string) {
 
 		var logger = logger.New("scan.log", "scan")
+		defer logger.Close()
 		var jobQueue int
 		var portWP *scan.PortWorkerPool
 		var defaultPorts int
@@ -58,12 +61,14 @@ Example:
 		workers, err := cmd.Flags().GetInt("workers")
 		checkError(err)
 
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer cancel()
+		
 		start := time.Now()
 
 		type Data struct {
 			Result map[string]*scan.TargetHost
 		}
-
 		data := &Data{Result: make(map[string]*scan.TargetHost)}
 
 		//Step 1: Generate hosts from subnet CIDR
@@ -78,7 +83,7 @@ Example:
 		}
 
 		fmt.Println("initializing scan...")
-		pingWorkerPool := scan.NewPingWorkerPool(workers, len(hosts), logger)
+		pingWorkerPool := scan.NewPingWorkerPool(workers, len(hosts), logger, ctx)
 
 		//fmt.Printf("hosts: %v\n", hosts)
 
@@ -121,11 +126,11 @@ Example:
 
 			if len(ports) > 0 && len(liveTargets) != 0 {
 				jobQueue = len(liveTargets) * len(ports)
-				portWP = scan.NewPortWorkerPool(workers, jobQueue, logger)
+				portWP = scan.NewPortWorkerPool(workers, jobQueue, logger, ctx)
 			} else {
 				defaultPorts = 6000
 				jobQueue = len(liveTargets) * defaultPorts
-				portWP = scan.NewPortWorkerPool(workers, jobQueue, logger)
+				portWP = scan.NewPortWorkerPool(workers, jobQueue, logger, ctx)
 			}
 
 			switch {
@@ -160,7 +165,6 @@ Example:
 				}
 				portWP.Start()
 				portWP.Wait()
-				logger.Close()
 			}
 
 			for _, target := range liveTargets {
