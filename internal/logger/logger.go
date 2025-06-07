@@ -1,7 +1,6 @@
 package logger
 
 import (
-	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -17,7 +16,7 @@ type Logger struct {
 func New(filename, prefix string) *Logger {
 	f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		fmt.Printf("log file could not be created: %v\n", err)
+		log.Fatalf("log file could not be created: %v\n", err)
 	}
 	prefix =  prefix + ": "
 	logger := log.New(f, prefix, log.Default().Flags())
@@ -28,7 +27,6 @@ func New(filename, prefix string) *Logger {
 		mu: sync.Mutex{},
 	}
 }
-
 
 func (l *Logger) Log(message string) error {
 	l.mu.Lock()

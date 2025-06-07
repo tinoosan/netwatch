@@ -1,6 +1,16 @@
 /*
 Copyright © 2025 NAME HERE <EMAIL ADDRESS>
 */
+
+// Scan flow:
+// 1. Generate IPs from CIDR
+// 2. Create PingJobs for each host
+// 3. Start PingWorkerPool, wait for completion
+// 4. Collect live hosts
+// 5. For each live host, create PortJobs for each port
+// 6. Start PortWorkerPool, wait for completion
+// 7. Print or save results
+
 package cmd
 
 import (
@@ -34,10 +44,11 @@ Example:
   netwatch scan --subnet 192.168.1.0/24 --output json`,
 	Run: func(cmd *cobra.Command, args []string) {
 
-		var pingLogger = logger.New("scan.log", "ping")
+		var logger = logger.New("scan.log", "scan")
 		var jobQueue int
 		var portWP *scan.PortWorkerPool
 		var defaultPorts int
+		var liveTargets []*scan.TargetHost
 
 		subnet, err := cmd.Flags().GetString("subnet")
 		checkError(err)
@@ -47,19 +58,26 @@ Example:
 		checkError(err)
 
 		start := time.Now()
-
-		//fmt.Printf("flags set: subnet %s | output %s\n", subnet, output)
+    
+		//Step 1: Generate hosts from subnet CIDR
+		fmt.Println("generating hosts for subnet", subnet)
 		hosts, err := scan.GenerateHosts(subnet)
 		checkError(err)
 		if len(hosts) == 0 {
 			fmt.Printf("no hosts found in subnet %s\n", subnet)
 			return
+		} else {
+			fmt.Printf("generated %d possible hosts\n", len(hosts))
 		}
 
-		pingWorkerPool := scan.NewPingWorkerPool(workers, len(hosts), pingLogger)
+		fmt.Println("initializing scan...")
+		pingWorkerPool := scan.NewPingWorkerPool(workers, len(hosts), logger)
 
 		//fmt.Printf("hosts: %v\n", hosts)
-
+    
+		//Step 2: Use hosts to create jobs for workers and add them to worker pool for ping job.
+		//This will allow each worker to mutate the host with the result of the job reducing the need for 
+		// a result channel
 		for i, host := range hosts {
 			job := &scan.PingJob{
 				ID:         scan.GenerateEchoID(host.IP, i),
@@ -71,17 +89,17 @@ Example:
 			pingWorkerPool.AddJob(job)
 		}
 
+
+		//Step 3: Start the job
 		pingWorkerPool.Start()
 		go pingWorkerPool.Process()
 		pingWorkerPool.Wait()
-		pingLogger.Close()
 
-		var liveTargets []*scan.TargetHost
-
+  //Step 4: Collect the live hosts.
 		for _, host := range hosts {
 			if host.ICMPErr != nil {
-				checkError(host.ICMPErr)
-			} 
+				logger.Log(host.ICMPErr.Error())
+			}
 
 			if host.Up {
 				liveTargets = append(liveTargets, host)
@@ -92,15 +110,16 @@ Example:
 			fmt.Println("no hosts found")
 		} else {
 			fmt.Printf("found %v hosts that are up\n", len(liveTargets))
+	//Step 5: Start the port scan by creating the jobs and then starting the worker pool.
 			fmt.Println("performing port scan...")
 
 			if len(ports) > 0 && len(liveTargets) != 0 {
 				jobQueue = len(liveTargets) * len(ports)
-				portWP = scan.NewPortWorkerPool(workers, jobQueue)
+				portWP = scan.NewPortWorkerPool(workers, jobQueue, logger)
 			} else {
 				defaultPorts = 6000
 				jobQueue = len(liveTargets) * defaultPorts
-				portWP = scan.NewPortWorkerPool(workers, jobQueue)
+				portWP = scan.NewPortWorkerPool(workers, jobQueue, logger)
 			}
 
 			switch {
@@ -135,12 +154,12 @@ Example:
 				}
 				portWP.Start()
 				portWP.Wait()
+				logger.Close()
 			}
 
 			for _, target := range liveTargets {
-			fmt.Printf("%+v\n", target)
+				fmt.Printf("%+v\n", target)
 			}
-
 
 			duration := time.Since(start)
 			fmt.Printf("Scan complete! Duration: %s\n", duration)

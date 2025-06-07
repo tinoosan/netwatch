@@ -5,31 +5,36 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/tinoosan/netwatch/internal/logger"
 )
 
 type PortJob struct {
 	Target *TargetHost
-	Port    string
+	Port   string
 }
 
 type PortScanResult struct {
 	Port string
 	Open bool
-	Err error
+	Err  error
 }
 
 type PortWorkerPool struct {
 	Workers  int
 	JobQueue chan PortJob
-	Results  chan PortJob
+	logger   *logger.Logger
 	wg       *sync.WaitGroup
+	mu       *sync.Mutex
 }
 
-func NewPortWorkerPool(numOfWorkers int, jobQueue int) *PortWorkerPool {
+func NewPortWorkerPool(numOfWorkers int, jobQueue int, logger *logger.Logger) *PortWorkerPool {
 	return &PortWorkerPool{
 		Workers:  numOfWorkers,
 		JobQueue: make(chan PortJob, jobQueue),
+		logger: logger,
 		wg:       &sync.WaitGroup{},
+		mu:       &sync.Mutex{},
 	}
 }
 
@@ -40,21 +45,31 @@ func (wp *PortWorkerPool) AddJob(job PortJob) {
 func (wp *PortWorkerPool) Worker(id int) {
 	defer wp.wg.Done()
 	for job := range wp.JobQueue {
-		addr := net.JoinHostPort(job.Target.IP.String(), job.Port)
-		//fmt.Printf("worker %v scanning port %v on host %v\n", id, job.Port, job.IP)
+
+		wp.mu.Lock()
+		hostIP := job.Target.IP.String()
+		wp.mu.Unlock()
+
+		port := job.Port
+		addr := net.JoinHostPort(hostIP, port)
+	  message := fmt.Sprintf("scanning port %v on host %v\n", job.Port, hostIP)
+		wp.logger.Log(message)
 		conn, err := net.DialTimeout("tcp", addr, time.Duration(20*time.Millisecond))
 		if err == nil {
-			fmt.Println("Port", job.Port, "open on host", job.Target.IP.String())
-			//fmt.Printf("worker %v finished scanning port %v on host %v\n", id, job.Port, job.IP)
+			message2 := fmt.Sprint("Port", port, "open on host\n", hostIP)
+		wp.logger.Log(message2)
 			conn.Close()
 			result := PortScanResult{
-				Port: job.Port,
+				Port: port,
 				Open: true,
-				Err: nil,
+				Err:  nil,
 			}
+
+			wp.mu.Lock()
 			job.Target.OpenPorts = append(job.Target.OpenPorts, result)
+			wp.mu.Unlock()
 		} else {
-			//fmt.Printf("worker %v finished scanning port %v on host %v but got error %v\n", id, job.Port, job.Target.IP.String(), err)
+			//fmt.Printf("finished scanning port %v on host %v but got error %v\n", id, job.Port, job.Target.IP.String(), err)
 			continue
 		}
 	}

@@ -64,17 +64,18 @@ var (
 	ErrPingTimeout   = errors.New("ping time out for host %v\n")
 )
 
-func NewPingWorkerPool(numOfWorkers int, jobQueue int, pingLogger *logger.Logger) *PingWorkerPool {
+func NewPingWorkerPool(numOfWorkers int, jobQueue int, logger *logger.Logger) *PingWorkerPool {
 	wg := &sync.WaitGroup{}
 	conn, err := icmp.ListenPacket("ip4:icmp", ListenAddress)
 	if err != nil {
 		fmt.Printf(ErrSocketConn.Error(), err)
+		os.Exit(1)
 	}
 	return &PingWorkerPool{
 		Workers:  numOfWorkers,
 		JobQueue: make(chan *PingJob, jobQueue),
 		wg:       wg,
-		logger:   pingLogger,
+		logger:   logger,
 		conn:     conn,
 		Jobs:     make(map[int]*PingJob),
 		mu:       &sync.Mutex{},
@@ -136,7 +137,7 @@ func (wp *PingWorkerPool) Start() {
 
 func (wp *PingWorkerPool) Process() {
 	if wp.conn != nil {
-		for len(wp.JobQueue) > 0{
+		for {
 			parsedMessage, peer, err := wp.ReadReply()
 			if err != nil {
 				if isConnectionClosed(err) {
