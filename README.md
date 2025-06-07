@@ -26,6 +26,15 @@ netwatch scan --subnet 192.168.1.0/24
 netwatch scan --subnet 192.168.1.0/24 --port 22,80,443
 ```
 
+## Commands
+
+- `scan` - Perform a one-off scan of a subnet and optionally check TCP ports.
+- `monitor` - Continuously scan a subnet at a specified interval.
+- `device list` - Show devices discovered in the most recent scan.
+- `device diff` - Compare the two most recent scans and display changes.
+- `logs` - Inspect the Netwatch log file with optional filtering.
+- `status` - Serve current scan information over HTTP.
+
 ## Example Output
 
 ```
