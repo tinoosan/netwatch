@@ -1,3 +1,6 @@
+// Package scan contains the low level ICMP and TCP scanning primitives used by
+// Netwatch. It provides worker pools for performing network operations in
+// parallel and data structures for storing scan results.
 package scan
 
 import (
@@ -15,6 +18,8 @@ import (
 	"golang.org/x/net/ipv4"
 )
 
+// TargetHost represents a single IP address discovered during a scan.
+// Fields are updated as ICMP and port scan results are collected.
 type TargetHost struct {
 	IP        net.IP
 	Up        bool
@@ -22,6 +27,7 @@ type TargetHost struct {
 	ICMPErr   error
 }
 
+// PingJob describes a ping request that will be executed by the worker pool.
 type PingJob struct {
 	ID         int
 	Target     *TargetHost
@@ -31,10 +37,14 @@ type PingJob struct {
 	MaxRetries int
 }
 
+// PingResult contains the outcome of a ping attempt.
 type PingResult struct {
 	Err error
 }
 
+// PingWorkerPool manages a pool of goroutines that execute PingJobs. It keeps
+// track of outstanding jobs so replies can be matched to the request that
+// generated them.
 type PingWorkerPool struct {
 	Workers  int
 	JobQueue chan *PingJob
@@ -64,6 +74,8 @@ var (
 	ErrPingTimeout   = errors.New("ping time out for host %v\n")
 )
 
+// NewPingWorkerPool creates a pool with the specified number of workers and job queue
+// capacity. It also opens a raw ICMP socket which is shared by all workers.
 func NewPingWorkerPool(numOfWorkers int, jobQueue int, logger *logger.Logger, ctx context.Context) *PingWorkerPool {
 	wg := &sync.WaitGroup{}
 	conn, err := icmp.ListenPacket("ip4:icmp", ListenAddress)
@@ -83,6 +95,8 @@ func NewPingWorkerPool(numOfWorkers int, jobQueue int, logger *logger.Logger, ct
 	}
 }
 
+// Worker executes ping jobs from the queue until it is closed or the context is
+// cancelled. Each worker sends the ICMP echo request and waits for a reply.
 func (wp *PingWorkerPool) Worker(id int) {
 	defer wp.wg.Done()
 	for job := range wp.JobQueue {
@@ -124,11 +138,14 @@ func (wp *PingWorkerPool) Worker(id int) {
 	}
 }
 
+// AddJob enqueues a ping job for processing and tracks it so the response can
+// be matched when it arrives.
 func (wp *PingWorkerPool) AddJob(job *PingJob) {
 	wp.JobQueue <- job
 	wp.Jobs[job.ID] = job
 }
 
+// Start launches the worker goroutines that will process jobs from the queue.
 func (wp *PingWorkerPool) Start() {
 
 	for i := 1; i <= wp.Workers; i++ {
@@ -138,54 +155,57 @@ func (wp *PingWorkerPool) Start() {
 	}
 }
 
+// Process continuously reads from the ICMP socket and dispatches replies to the
+// appropriate job. It should be run in its own goroutine.
 func (wp *PingWorkerPool) Process() {
 	if wp.conn != nil {
 		for {
 			select {
 			case <-wp.context.Done():
 				fmt.Println("cancelling scan..")
-			return 
+				return
 			default:
-			parsedMessage, peer, err := wp.ReadReply()
+				parsedMessage, peer, err := wp.ReadReply()
 
-			if err != nil {
-				if isConnectionClosed(err) {
-					return
+				if err != nil {
+					if isConnectionClosed(err) {
+						return
+					}
 				}
-			}
 
-			if parsedMessage != nil {
-				if parsedMessage.Type == ipv4.ICMPTypeEchoReply {
-					body := parsedMessage.Body.(*icmp.Echo)
+				if parsedMessage != nil {
+					if parsedMessage.Type == ipv4.ICMPTypeEchoReply {
+						body := parsedMessage.Body.(*icmp.Echo)
 
-					wp.mu.Lock()
-					job, ok := wp.Jobs[body.ID]
-					wp.mu.Unlock()
+						wp.mu.Lock()
+						job, ok := wp.Jobs[body.ID]
+						wp.mu.Unlock()
 
-					if ok {
-						duration := time.Since(job.SentAt)
-						//fmt.Printf("checking type for reply for body ID %v\n", body.ID)
-						proto := parsedMessage.Type.Protocol()
-						echoReplyLog := fmt.Sprintf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
-						wp.logger.Log(echoReplyLog)
-						fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s\n", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
+						if ok {
+							duration := time.Since(job.SentAt)
+							//fmt.Printf("checking type for reply for body ID %v\n", body.ID)
+							proto := parsedMessage.Type.Protocol()
+							echoReplyLog := fmt.Sprintf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
+							wp.logger.Log(echoReplyLog)
+							fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s\n", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
 
-						result := &PingResult{
-							Err: nil,
+							result := &PingResult{
+								Err: nil,
+							}
+							job.ResultChan <- result
 						}
-						job.ResultChan <- result
+						continue
 					}
 					continue
 				}
 				continue
 			}
-			continue
 		}
-	}
 
-			}
+	}
 }
 
+// Wait blocks until all workers have finished and then closes the ICMP socket.
 func (wp *PingWorkerPool) Wait() {
 	defer wp.conn.Close()
 	close(wp.JobQueue)
@@ -199,6 +219,8 @@ func isConnectionClosed(err error) bool {
 	return false
 }
 
+// GenerateHosts expands a subnet in CIDR notation into a slice of TargetHost
+// objects representing each potential address in the range.
 func GenerateHosts(subnet string) ([]*TargetHost, error) {
 	ipList := make([]net.IP, 0)
 	_, network, err := net.ParseCIDR(subnet)
@@ -225,6 +247,7 @@ func GenerateHosts(subnet string) ([]*TargetHost, error) {
 	return targetHosts, nil
 }
 
+// SendPing sends an ICMP echo request for the provided job.
 func (wp *PingWorkerPool) SendPing(job *PingJob, seq int) error {
 
 	msg := icmp.Message{
@@ -258,6 +281,7 @@ func (wp *PingWorkerPool) SendPing(job *PingJob, seq int) error {
 	return nil
 }
 
+// ReadReply waits for an ICMP response on the socket and parses it.
 func (wp *PingWorkerPool) ReadReply() (*icmp.Message, net.Addr, error) {
 	var peer net.Addr
 	err := wp.conn.SetReadDeadline(time.Now().Add(11 * time.Second))
@@ -280,6 +304,7 @@ func (wp *PingWorkerPool) ReadReply() (*icmp.Message, net.Addr, error) {
 	return parsedMessage, peer, nil
 }
 
+// ipToUint32 converts an IPv4 address to a uint32 representation.
 func ipToUint32(ip net.IP) uint32 {
 	ip = ip.To4()
 	if ip == nil {
@@ -290,11 +315,15 @@ func ipToUint32(ip net.IP) uint32 {
 
 // toUint32 converts a 4-byte IP address or subnet mask into a 32-bit unsigned integer.
 // Assumes the input slice is in big-endian order and has a length of 4
+// toUint32 converts a 4-byte IP address or subnet mask into a 32-bit unsigned integer.
+// Assumes the input slice is in big-endian order and has a length of 4.
 func toUint32(b []byte) uint32 {
 	return (uint32(b[0]) << 24) | (uint32(b[1]) << 16) | (uint32(b[2]) << 8) | (uint32(b[3]))
 
 }
 
+// toByte converts a 32-bit unsigned integer into a 4-byte representation of an IP address.
+// The result is returned in big-endian order.
 // toByte converts a 32-bit unsigned integer into a 4-byte representation of an IP address.
 // The result is returned in big-endian order.
 func toByte(ipUint32 uint32) []byte {
@@ -306,6 +335,8 @@ func toByte(ipUint32 uint32) []byte {
 	return b
 }
 
+// GenerateEchoID calculates a unique identifier for a ping request based on the
+// process ID, worker ID and target IP.
 func GenerateEchoID(ip net.IP, WorkerId int) int {
 	return (os.Getpid() & 0xffff) ^ (WorkerId << 8) ^ (int(ipToUint32(ip)))&0xffff
 }
