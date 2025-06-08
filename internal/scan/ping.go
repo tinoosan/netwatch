@@ -185,9 +185,11 @@ func (wp *PingWorkerPool) Process() {
 							duration := time.Since(job.SentAt)
 							//fmt.Printf("checking type for reply for body ID %v\n", body.ID)
 							proto := parsedMessage.Type.Protocol()
-							echoReplyLog := fmt.Sprintf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
+							echoReplyLog := fmt.Sprintf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s", 
+								body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
 							wp.logger.Log(echoReplyLog)
-							fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s\n", body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
+							fmt.Printf("%d bytes from %s: pid =%d, icmp_type=%v, icmp_seq=%d, data=%s, time=%s\n", 
+								body.Len(proto), peer, body.ID, parsedMessage.Type, body.Seq, body.Data, duration)
 
 							result := &PingResult{
 								Err: nil,
