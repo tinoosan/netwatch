@@ -61,6 +61,18 @@ Example:
 		workers, err := cmd.Flags().GetInt("workers")
 		checkError(err)
 
+		systemIPNet, hwAddr, err := scan.GetSystemInfo()
+		if err != nil {
+			logger.Log(err.Error())
+		}
+
+		if subnet == "" {
+			subnet = systemIPNet.String()
+		}
+
+		fmt.Printf("Subnet: %v\n", subnet)
+		fmt.Printf("System MAC: %v\n", hwAddr.String())
+
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer cancel()
 		
@@ -207,7 +219,7 @@ func init() {
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
 	// scanCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
-	scanCmd.Flags().StringP("subnet", "s", "192.168.0.0/24", "CIDR block of the subnet to scan")
+	scanCmd.Flags().StringP("subnet", "s", "", "CIDR block of the subnet to scan")
 	scanCmd.Flags().StringSliceP("port", "p", nil, "Port(s) to scan")
 	scanCmd.Flags().IntP("workers", "w", 20, "Number of concurrent scans")
 }
