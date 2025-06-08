@@ -74,6 +74,28 @@ var (
 	ErrPingTimeout   = errors.New("ping time out for host %v\n")
 )
 
+func GetSystemInfo() (*net.IPNet, net.HardwareAddr, error) {
+	iface, err := net.InterfaceByName("wlp63s0")
+	if err != nil {
+		return nil, net.HardwareAddr{}, err
+	}
+
+	addrs, err2 := iface.Addrs()
+	if err2 != nil {
+		return nil, net.HardwareAddr{}, err2
+	}
+
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok || ipNet.IP == nil || ipNet.IP.To4() == nil {
+			continue
+		}
+	return ipNet, iface.HardwareAddr, nil
+	}
+
+	return nil, nil, fmt.Errorf("no ipv4 address found for interface %v", iface.Name)
+}
+
 // NewPingWorkerPool creates a pool with the specified number of workers and job queue
 // capacity. It also opens a raw ICMP socket which is shared by all workers.
 func NewPingWorkerPool(numOfWorkers int, jobQueue int, logger *logger.Logger, ctx context.Context) *PingWorkerPool {
