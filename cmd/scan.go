@@ -67,6 +67,7 @@ Example:
 		start := time.Now()
 
 		type Data struct {
+			Timestamp string
 			Result map[string]*scan.TargetHost
 		}
 		data := &Data{Result: make(map[string]*scan.TargetHost)}
@@ -174,6 +175,8 @@ Example:
 			duration := time.Since(start)
 			fmt.Printf("Scan complete! Duration: %s\n", duration)
 		}
+
+		data.Timestamp = time.Now().Format("2006-01-02T15:04:05")
 
 		f, err := os.OpenFile("scan.json", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
