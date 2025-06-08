@@ -315,15 +315,11 @@ func ipToUint32(ip net.IP) uint32 {
 
 // toUint32 converts a 4-byte IP address or subnet mask into a 32-bit unsigned integer.
 // Assumes the input slice is in big-endian order and has a length of 4
-// toUint32 converts a 4-byte IP address or subnet mask into a 32-bit unsigned integer.
-// Assumes the input slice is in big-endian order and has a length of 4.
 func toUint32(b []byte) uint32 {
 	return (uint32(b[0]) << 24) | (uint32(b[1]) << 16) | (uint32(b[2]) << 8) | (uint32(b[3]))
 
 }
 
-// toByte converts a 32-bit unsigned integer into a 4-byte representation of an IP address.
-// The result is returned in big-endian order.
 // toByte converts a 32-bit unsigned integer into a 4-byte representation of an IP address.
 // The result is returned in big-endian order.
 func toByte(ipUint32 uint32) []byte {
